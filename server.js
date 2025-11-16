@@ -29,11 +29,10 @@ const earnRoutes = require('./routes/earn');
 const app = express();
 
 const allowedOrigins = [
-  'https://novachain-frontend.vercel.app',
   'http://localhost:3000',
-  'https://novachain.pro',
-  'https://www.novachain.pro',
-  'https://novachain-frontend-garys-projects-331bf079.vercel.app'
+  'https://www.novachain.digital',
+  'https://novachain2-frontend.vercel.app',
+  'https://novachain.digital'
 ];
 
 app.use(cors({
