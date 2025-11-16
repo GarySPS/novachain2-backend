@@ -15,7 +15,7 @@ function authenticateToken(req, res, next) {
   jwt.verify(token, JWT_SECRET, (err, user) => { // <-- Use variable
     if (err) return res.status(403).json({ error: "Token invalid" });
     req.user = user;
-  T next();
+    next();
   });
 }
 
