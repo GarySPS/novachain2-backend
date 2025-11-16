@@ -26,6 +26,13 @@ const userRoutes = require('./routes/user');
 const uploadRoute = require('./routes/upload');
 const earnRoutes = require('./routes/earn');
 
+const requireAdminToken = (req, res, next) => {
+  if (req.headers['x-admin-token'] !== process.env.ADMIN_API_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized admin token" });
+  }
+  next();
+};
+
 const app = express();
 
 const allowedOrigins = [
@@ -65,6 +72,67 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+app.get(
+  '/api/admin/deposit-addresses',
+  requireAdminToken,
+  async (req, res) => {
+    try {
+      const result = await pool.query(`SELECT coin, address, qr_url FROM deposit_addresses`);
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch deposit addresses" });
+    }
+  }
+);
+
+app.post(
+  '/api/admin/deposit-addresses',
+  requireAdminToken,
+  upload.any(), // <-- This server's multer handles the proxied files
+  async (req, res) => {
+    try {
+      const coins = ['USDT', 'BTC', 'ETH', 'TON', 'SOL', 'XRP']; // Must match admin frontend
+      let updated = 0;
+      
+      for (const coin of coins) {
+        const address = req.body[`${coin}_address`]; // Keep undefined if not present
+        const qrFile = (req.files || []).find(f => f.fieldname === `${coin}_qr`);
+        let qr_url = qrFile ? `/uploads/${qrFile.filename}` : null; // Path on this server
+
+        if (address !== undefined || qrFile) {
+          // This logic updates the row
+          await pool.query(
+            `
+            INSERT INTO deposit_addresses (coin, address, qr_url, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (coin)
+            DO UPDATE SET 
+              address = COALESCE($2, deposit_addresses.address), 
+              qr_url = COALESCE($3, deposit_addresses.qr_url), 
+              updated_at = NOW()
+            `,
+            [
+              coin, 
+              address === undefined ? null : address, // Handle address not being sent
+              qr_url // Will be null if no file, COALESCE handles it
+          	]
+          );
+          updated++;
+        }
+      }
+      
+      if (!updated) {
+        return res.status(400).json({ success: false, message: "No address or QR data received" });
+      }
+      
+      res.json({ success: true, message: "Deposit wallet settings updated" });
+    } catch (err) {
+      console.error("ADMIN DEPOSIT SAVE ERROR:", err);
+      res.status(500).json({ success: false, message: "Failed to save deposit settings", detail: err.message });
+    }
+  }
+);
+
 // --------- ROUTE MOUNTING ---------
 app.use('/api/admin', adminRoutes);
 app.use('/api/trade', tradeRoutes);
@@ -87,15 +155,16 @@ app.get("/", (req, res) => {
 });
 
 // --- Fetch deposit addresses for user deposit modal (public, no auth needed) ---
-app.get('/api/deposit-addresses', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT coin, address, qr_url FROM deposit_addresses`
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch deposit addresses" });
-  }
+app.get('/api/public/deposit-addresses', async (req, res) => { // <-- Renamed route
+  try {
+    const result = await pool.query(
+      // Only send coins that have an address set
+      `SELECT coin, address, qr_url FROM deposit_addresses WHERE address IS NOT NULL AND address != ''`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch deposit addresses" });
+  }
 });
 
 // --- ADMIN: Fetch ALL trades for admin backend ---
