@@ -48,7 +48,7 @@ router.post('/', authenticateToken, async (req, res) => {
       `INSERT INTO withdrawals (user_id, coin, amount, address, status)
        VALUES ($1, $2, $3, $4, 'pending')
        RETURNING id`,
-      [user_id, coin, amount, address]
+      [user_id, coin, amount, address, network]
     );
 
     await client.query('COMMIT');
