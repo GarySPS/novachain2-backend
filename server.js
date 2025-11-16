@@ -88,45 +88,46 @@ app.get(
 
 // --- NEW: Admin-only route to SAVE deposit settings ---
 app.post(
-  '/api/admin/deposit-addresses',
-  requireAdminToken,
-  // We removed upload.any() - this route now accepts JSON
-  async (req, res) => {
-    const wallets = req.body; // This is an array: [{ coin: 'USDT', ... }, ...]
-    if (!Array.isArray(wallets)) {
-      return res.status(400).json({ success: false, message: "Invalid payload. Expected an array." });
-    }
+  '/api/admin/deposit-addresses',
+  requireAdminToken,
+  async (req, res) => {
+    const wallets = req.body; // This is an array: [{ coin: 'USDT', ... }, ...]
+    if (!Array.isArray(wallets)) {
+      return res.status(400).json({ success: false, message: "Invalid payload. Expected an array." });
+    }
 
-    const client = await pool.connect(); // Use a transaction for all-or-nothing
-    try {
-      await client.query('BEGIN');
-      
-      for (const wallet of wallets) {
-        // Use "INSERT ... ON CONFLICT" (UPSERT)
-        await client.query(
-          `
-            INSERT INTO deposit_addresses (coin, address, qr_url)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (coin)
-            DO UPDATE SET 
-              address = EXCLUDED.address, 
-              qr_url = EXCLUDED.qr_url
-            `,
-            [wallet.coin, wallet.address, wallet.qr_url]
-          );
-      }
-      
-      await client.query('COMMIT');
-      res.json({ success: true, message: "Deposit wallet settings updated" });
+    const client = await pool.connect(); // Use a transaction for all-or-nothing
+    try {
+      await client.query('BEGIN');
+      
+      for (const wallet of wallets) {
+        // Use "INSERT ... ON CONFLICT" (UPSERT)
+        await client.query(
+          `
+            INSERT INTO deposit_addresses (coin, address, qr_url, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (coin)
+            DO UPDATE SET 
+              address = EXCLUDED.address, 
+              qr_url = EXCLUDED.qr_url, 
+              updated_at = NOW()
+            `,
+            // We are only passing 3 values, NOW() is a SQL function
+            [wallet.coin, wallet.address, wallet.qr_url]
+        );
+      }
+      
+      await client.query('COMMIT');
+      res.json({ success: true, message: "Deposit wallet settings updated" });
 
-    } catch (err) {
-      await client.query('ROLLBACK');
-      console.error("ADMIN DEPOSIT SAVE ERROR:", err);
-      res.status(500).json({ success: false, message: "Failed to save deposit settings", detail: err.message });
-    } finally {
-      client.release();
-    }
-  }
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error("ADMIN DEPOSIT SAVE ERROR:", err); // <-- THIS IS THE IMPORTANT LINE
+      res.status(500).json({ success: false, message: "Failed to save deposit settings", detail: err.message });
+    } finally {
+      client.release();
+    }
+  }
 );
 
 // --------- ROUTE MOUNTING ---------
