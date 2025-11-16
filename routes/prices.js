@@ -308,6 +308,8 @@ const STATIC_PRICE_FALLBACKS = {
   solana: 163.00,
   ripple: 2.46,
   toncoin: 3.00,
+  tether: 1.00,
+  usdt: 1.00,
 };
 
 function getSyntheticData(symbol) {
