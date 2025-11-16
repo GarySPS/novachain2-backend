@@ -86,50 +86,47 @@ app.get(
   }
 );
 
+// --- NEW: Admin-only route to SAVE deposit settings ---
 app.post(
   '/api/admin/deposit-addresses',
   requireAdminToken,
-  upload.any(), // <-- This server's multer handles the proxied files
+  // We removed upload.any() - this route now accepts JSON
   async (req, res) => {
-    try {
-      const coins = ['USDT', 'BTC', 'ETH', 'TON', 'SOL', 'XRP']; // Must match admin frontend
-      let updated = 0;
-      
-      for (const coin of coins) {
-        const address = req.body[`${coin}_address`]; // Keep undefined if not present
-        const qrFile = (req.files || []).find(f => f.fieldname === `${coin}_qr`);
-        let qr_url = qrFile ? `/uploads/${qrFile.filename}` : null; // Path on this server
+    const wallets = req.body; // This is an array: [{ coin: 'USDT', ... }, ...]
+    if (!Array.isArray(wallets)) {
+      return res.status(400).json({ success: false, message: "Invalid payload. Expected an array." });
+    }
 
-        if (address !== undefined || qrFile) {
-          // This logic updates the row
-          await pool.query(
-            `
+    const client = await pool.connect(); // Use a transaction for all-or-nothing
+    try {
+      await client.query('BEGIN');
+      
+      for (const wallet of wallets) {
+Read-only
+        // Use "INSERT ... ON CONFLICT" (UPSERT)
+        await client.query(
+          `
             INSERT INTO deposit_addresses (coin, address, qr_url, updated_at)
             VALUES ($1, $2, $3, NOW())
             ON CONFLICT (coin)
             DO UPDATE SET 
-              address = COALESCE($2, deposit_addresses.address), 
-              qr_url = COALESCE($3, deposit_addresses.qr_url), 
+              address = EXCLUDED.address, 
+              qr_url = EXCLUDED.qr_url, 
               updated_at = NOW()
             `,
-            [
-              coin, 
-              address === undefined ? null : address, // Handle address not being sent
-              qr_url // Will be null if no file, COALESCE handles it
-          	]
+            [wallet.coin, wallet.address, wallet.qr_url]
           );
-          updated++;
-        }
       }
       
-      if (!updated) {
-        return res.status(400).json({ success: false, message: "No address or QR data received" });
-      }
-      
+      await client.query('COMMIT');
       res.json({ success: true, message: "Deposit wallet settings updated" });
+
     } catch (err) {
+      await client.query('ROLLBACK');
       console.error("ADMIN DEPOSIT SAVE ERROR:", err);
       res.status(500).json({ success: false, message: "Failed to save deposit settings", detail: err.message });
+    } finally {
+      client.release();
     }
   }
 );
