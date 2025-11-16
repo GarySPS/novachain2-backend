@@ -1,4 +1,9 @@
 //server.js
+
+// Force redeploy - Nov 16
+require('dotenv').config();
+const express = require('express');
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
