@@ -18,6 +18,11 @@ router.post(
       return res.status(400).json({ error: 'Missing required fields' });
     }
     try {
+      // --- NEW: Log values for debugging ---
+      console.log("Attempting deposit with values:");
+      console.log({ user_id, coin, amount, address, screenshot });
+      // --- End new log ---
+
       const result = await pool.query(
         `INSERT INTO deposits (user_id, coin, amount, address, screenshot, status)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
@@ -25,8 +30,8 @@ router.post(
       );
       res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
-      console.error("DEPOSIT CREATE FAILED:", err);
-      res.status(500).json({ error: 'Database error' });
+      console.error("DEPOSIT CREATE FAILED:", err);
+      res.status(500).json({ error: 'Database error', detail: err.message }); // Added detail
     }
   }
 );
@@ -36,7 +41,7 @@ router.get('/', async (req, res) => {
   // --- Admin view (checks for x-admin-token) ---
   if (req.headers['x-admin-token'] && req.headers['x-admin-token'] === process.env.ADMIN_API_TOKEN) {
     try {
-      const result = await pool.query('SELECT * FROM deposits ORDER BY created_at DESC');
+      'SELECT * FROM deposits ORDER BY created_at DESC');
       return res.json(result.rows);
     } catch (err) {
       return res.status(500).json({ error: 'Database error (admin)' });
