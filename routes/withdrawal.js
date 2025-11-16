@@ -37,11 +37,19 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Insufficient balance" });
     }
 
-    // --- 1. Deduct balance first ---
-    await client.query(
-      'UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3',
-      [amount, user_id, coin]
-    );
+    // --- 1. Deduct balance first (and check balance again) ---
+    const { rowCount } = await client.query(
+      `UPDATE user_balances
+       SET balance = balance - $1
+       WHERE user_id = $2 AND coin = $3 AND balance >= $1`,
+      [amount, user_id, coin]
+    );
+
+    // --- NEW: Check if the update actually worked ---
+    if (rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
 
     // --- 2. Create withdrawal request ---
     const result = await client.query(
