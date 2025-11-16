@@ -5,35 +5,40 @@ const { authenticateToken, authenticateAdminToken } = require('../middleware/aut
 const jwt = require('jsonwebtoken'); // <-- Add jwt import
 require('dotenv').config(); // <-- Add dotenv import
 
-// --- Create deposit (user, supply screenshot URL, JWT protected) ---
-// This route is correct.
 router.post(
-  '/',
-  authenticateToken,
-  async (req, res) => {
-    const user_id = req.user.id;
-    const { coin, amount, address, screenshot } = req.body; 
+  '/',
+  authenticateToken,
+  async (req, res) => {
+    const user_id = req.user.id;
+    const { coin, amount, address, screenshot } = req.body; 
 
-    if (!user_id || !coin || !amount || !address || !screenshot) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    try {
-      // --- NEW: Log values for debugging ---
-      console.log("Attempting deposit with values:");
-      console.log({ user_id, coin, amount, address, screenshot });
-      // --- End new log ---
+    console.log("🔍 BACKEND: Received deposit request:", {
+      user_id, coin, amount, address, screenshot
+    });
 
-      const result = await pool.query(
-        `INSERT INTO deposits (user_id, coin, amount, address, screenshot, status)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [user_id, coin, amount, address, screenshot, 'pending']
-      );
-      res.json({ success: true, id: result.rows[0].id });
-    } catch (err) {
-      console.error("DEPOSIT CREATE FAILED:", err);
-      res.status(500).json({ error: 'Database error', detail: err.message }); // Added detail
-    }
-  }
+    if (!user_id || !coin || !amount || !address || !screenshot) {
+      console.log("❌ BACKEND: Missing required fields");
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    try {
+      console.log("🔍 BACKEND: Attempting to insert into database...");
+      
+      const result = await pool.query(
+        `INSERT INTO deposits (user_id, coin, amount, address, screenshot, status)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [user_id, coin, amount, address, screenshot, 'pending']
+      );
+      
+      console.log("✅ BACKEND: Deposit created successfully, ID:", result.rows[0].id);
+      res.json({ success: true, id: result.rows[0].id });
+    } catch (err) {
+      console.error("❌ BACKEND: DEPOSIT CREATE FAILED:", err);
+      console.error("❌ BACKEND: SQL Error details:", err.message);
+      console.error("❌ BACKEND: SQL Query that failed:");
+      console.error(`INSERT INTO deposits (user_id, coin, amount, address, screenshot, status) VALUES (${user_id}, ${coin}, ${amount}, ${address}, ${screenshot}, 'pending')`);
+      res.status(500).json({ error: 'Database error', detail: err.message });
+    }
+  }
 );
 
 // --- Get all deposits (SECURED for admin view or user view) ---
@@ -74,7 +79,7 @@ router.get('/', async (req, res) => {
 });
 
 // --- Admin: Approve/Reject deposit by id (SECURED + FIXED) ---
-router.post(
+
   '/:id/status',
   authenticateAdminToken, // <-- 1. ADDED SECURITY
   async (req, res) => {
