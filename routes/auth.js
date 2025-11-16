@@ -56,22 +56,14 @@ router.post('/register', async (req, res) => {
     const plainPassword = password; // <-- No bcrypt hash
     const otp = crypto.randomInt(100000, 999999).toString();
 
-    // Generate random unique ID (max 10 attempts)
-    let userId;
-    let retries = 0;
-    while (retries < 10) {
-      userId = crypto.randomInt(1, 1000000); // 1..999999
-      const idCheck = await pool.query('SELECT 1 FROM users WHERE id = $1', [userId]);
-      if (idCheck.rows.length === 0) break; // Unique
-      retries++;
-    }
-    if (retries === 10) return res.status(500).json({ error: "Could not assign unique user ID. Please try again." });
-
-    // Insert user with custom random ID
-   await pool.query(
-  'INSERT INTO users (id, username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-  [userId, username, email, password, 0, otp, false]
+    // Insert user (let database generate the 'id') and get the new id back
+const newUser = await pool.query(
+  'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+  [username, email, password, 0, otp, false]
 );
+
+// Get the new user's ID to use for inserting balances
+const userId = newUser.rows[0].id;
 
 
     // Insert balances for all coins (multi-coin support)
