@@ -12,8 +12,8 @@ const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN || 'yourSecureAdminTokenHere
 // This route is correct.
 router.post('/', authenticateToken, async (req, res) => {
   const user_id = req.user.id;
-  const { coin, amount, address } = req.body;
-  if (!user_id || !coin || !amount || !address) {
+  const { coin, amount, address, network } = req.body;
+  if (!user_id || !coin || !amount || !address || !network) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
