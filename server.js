@@ -27,13 +27,6 @@ const userRoutes = require('./routes/user');
 const uploadRoute = require('./routes/upload');
 const earnRoutes = require('./routes/earn');
 
-const requireAdminToken = (req, res, next) => {
-  if (req.headers['x-admin-token'] !== process.env.ADMIN_API_TOKEN) {
-    return res.status(401).json({ error: "Unauthorized admin token" });
-  }
-  next();
-};
-
 const app = express();
 
 const allowedOrigins = [
