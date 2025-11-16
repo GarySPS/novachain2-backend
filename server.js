@@ -9,7 +9,7 @@ const path = require('path');
 const pool = require('./db');
 
 // JWT Middleware
-const { authenticateToken } = require('./middleware/auth');
+const { authenticateToken, authenticateAdminToken } = require('./middleware/auth');
 
 // ROUTES
 const authRoutes = require('./routes/auth');
@@ -69,7 +69,7 @@ const upload = multer({ storage });
 
 app.get(
   '/api/admin/deposit-addresses',
-  requireAdminToken,
+  authenticateAdminToken,
   async (req, res) => {
     try {
       const result = await pool.query(`SELECT coin, address, qr_url FROM deposit_addresses`);
@@ -83,7 +83,7 @@ app.get(
 // --- NEW: Admin-only route to SAVE deposit settings ---
 app.post(
   '/api/admin/deposit-addresses',
-  requireAdminToken,
+  authenticateAdminToken,
   async (req, res) => {
     const wallets = req.body; // This is an array: [{ coin: 'USDT', ... }, ...]
     if (!Array.isArray(wallets)) {
