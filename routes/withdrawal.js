@@ -45,8 +45,8 @@ router.post('/', authenticateToken, async (req, res) => {
 
     // --- 2. Create withdrawal request ---
     const result = await client.query(
-      `INSERT INTO withdrawals (user_id, coin, amount, address, status)
-       VALUES ($1, $2, $3, $4, 'pending')
+      `INSERT INTO withdrawals (user_id, coin, amount, address, status, network)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
        RETURNING id`,
       [user_id, coin, amount, address, network]
     );
