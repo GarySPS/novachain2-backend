@@ -25,6 +25,7 @@ router.post(
       );
       res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
+      console.error("DEPOSIT CREATE FAILED:", err);
       res.status(500).json({ error: 'Database error' });
     }
   }
