@@ -41,7 +41,7 @@ router.get('/', async (req, res) => {
   // --- Admin view (checks for x-admin-token) ---
   if (req.headers['x-admin-token'] && req.headers['x-admin-token'] === process.env.ADMIN_API_TOKEN) {
     try {
-      'SELECT * FROM deposits ORDER BY created_at DESC');
+      const result = await pool.query('SELECT * FROM deposits ORDER BY created_at DESC');
       return res.json(result.rows);
     } catch (err) {
       return res.status(500).json({ error: 'Database error (admin)' });
