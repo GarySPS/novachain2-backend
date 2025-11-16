@@ -11,6 +11,7 @@ const CG_ID = {
   btc: "bitcoin",
   ethereum: "ethereum",
   tether: "tether",
+  usdt: "tether",
   solana: "solana",
   ripple: "ripple",
   toncoin: "toncoin",
