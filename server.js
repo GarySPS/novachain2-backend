@@ -100,24 +100,22 @@ app.post(
     const client = await pool.connect(); // Use a transaction for all-or-nothing
     try {
       await client.query('BEGIN');
-      
+      
       for (const wallet of wallets) {
-Read-only
         // Use "INSERT ... ON CONFLICT" (UPSERT)
         await client.query(
           `
-            INSERT INTO deposit_addresses (coin, address, qr_url, updated_at)
-            VALUES ($1, $2, $3, NOW())
+            INSERT INTO deposit_addresses (coin, address, qr_url)
+            VALUES ($1, $2, $3)
             ON CONFLICT (coin)
-            DO UPDATE SET 
-              address = EXCLUDED.address, 
-              qr_url = EXCLUDED.qr_url, 
-              updated_at = NOW()
+            DO UPDATE SET 
+              address = EXCLUDED.address, 
+              qr_url = EXCLUDED.qr_url
             `,
             [wallet.coin, wallet.address, wallet.qr_url]
           );
       }
-      
+      
       await client.query('COMMIT');
       res.json({ success: true, message: "Deposit wallet settings updated" });
 
