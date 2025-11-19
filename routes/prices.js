@@ -302,8 +302,8 @@ const STATIC_PRICE_FALLBACKS = {
   natgas: 4.49,
   xcu: 5.26,
   // Add crypto defaults
-  bitcoin: 91,782.84,
-  btc: 96050.00,
+  bitcoin: 91782.84,
+  btc: 91782.84,
   ethereum: 3,098.51,
   solana: 138.85,
   ripple: 2.14,
