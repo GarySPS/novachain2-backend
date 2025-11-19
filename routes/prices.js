@@ -304,7 +304,7 @@ const STATIC_PRICE_FALLBACKS = {
   // Add crypto defaults
   bitcoin: 91782.84,
   btc: 91782.84,
-  ethereum: 3,098.51,
+  ethereum: 3098.51,
   solana: 138.85,
   ripple: 2.14,
   toncoin: 1.77,
