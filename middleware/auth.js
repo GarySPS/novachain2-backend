@@ -1,4 +1,6 @@
-require('dotenv').config(); // <-- ADD THIS
+//middleware>auth.js
+
+require('dotenv').config();
 const jwt = require('jsonwebtoken');
 
 const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN || 'yourSecureAdminTokenHere1234'; // <-- ADD THIS

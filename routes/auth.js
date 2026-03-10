@@ -1,3 +1,5 @@
+//routes>auth.js
+
 const bcrypt = require('bcrypt');
 const { authenticateToken } = require('../middleware/auth');
 const express = require('express');
@@ -252,5 +254,59 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
+// --- Web3 Login / Registration ---
+router.post('/web3-login', async (req, res) => {
+  const { walletAddress } = req.body;
+  if (!walletAddress) return res.status(400).json({ error: 'Wallet address required' });
+
+  try {
+    // 1. Check if user already exists using the wallet address as a dummy email
+    const web3Email = `${walletAddress.toLowerCase()}@web3.novachain`;
+    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [web3Email]);
+    
+    let user = rows[0];
+
+    if (!user) {
+      // 2. Create new Web3 user if they don't exist
+      const username = 'Web3_' + walletAddress.substring(2, 8); // e.g., Web3_1a2b3c
+      const dummyPassword = 'WEB3_LOGIN_NO_PASSWORD'; // They use their wallet to sign in, not a password
+
+      const newUser = await pool.query(
+        'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [username, web3Email, dummyPassword, 0, null, true] // verified is instantly true
+      );
+      user = newUser.rows[0];
+
+      // 3. Insert empty balances for all coins
+      const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
+      await Promise.all(
+        coins.map((coin) => 
+          pool.query(
+            `INSERT INTO user_balances (user_id, coin, balance) VALUES ($1, $2, 0)`,
+            [user.id, coin]
+          )
+        )
+      );
+    }
+
+    // 4. Generate standard JWT token so the frontend handles them like a normal user
+    const payload = { id: user.id, username: user.username, email: user.email };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+    
+    res.json({
+      token,
+      user: {
+        id: "NC-" + String(user.id).padStart(7, "0"),
+        username: user.username,
+        email: user.email,
+        walletAddress: walletAddress
+      }
+    });
+
+  } catch (err) {
+    console.error('Web3 Login Error:', err);
+    res.status(500).json({ error: 'Database error during Web3 login' });
+  }
+});
 
 module.exports = router;
