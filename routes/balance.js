@@ -12,8 +12,8 @@ router.get('/', authenticateToken, async (req, res) => {
       [req.user.id]
     );
     // Always show all coins (including 0 balance)
-    const allCoins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
-    const assets = allCoins.map(symbol => {
+    const allCoins = ["USDT", "USDC", "BTC", "ETH", "BNB"];
+    const assets = allCoins.map(symbol => {
       const row = rows.find(r => r.coin === symbol);
       return {
         symbol,

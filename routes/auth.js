@@ -70,7 +70,7 @@ const newUser = await pool.query(
 );
     const userId = newUser.rows[0].id;
 
-    const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
+    const coins = ["USDT", "USDC", "BTC", "ETH", "BNB"];
     await Promise.all(
       coins.map((coin) => pool.query(`INSERT INTO user_balances (user_id, coin, balance) VALUES ($1, $2, 0)`, [userId, coin]))
     );
@@ -273,7 +273,7 @@ router.post('/web3-login', async (req, res) => {
       user = newUser.rows[0];
 
       // 3. Insert empty balances for all coins
-      const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
+      const coins = ["USDT", "USDC", "BTC", "ETH", "BNB"];
       await Promise.all(
         coins.map((coin) => 
           pool.query(
