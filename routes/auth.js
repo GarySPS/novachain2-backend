@@ -27,7 +27,7 @@ router.post('/register', async (req, res) => {
   }
 
   // Generate a demo email if using phone
-  const targetEmail = email ? email : `${telegramNumber.replace(/[^0-9+]/g, '')}@phone.demo`;
+  const targetEmail = email ? email : `${phoneNumber.replace(/[^0-9+]/g, '')}@phone.demo`;
 
   try {
     // Check duplicate email / telegram demo email
