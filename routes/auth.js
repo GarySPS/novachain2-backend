@@ -18,22 +18,19 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Register (Handles both Email and Phone signups)
+// --- Register (Email or Phone) ---
 router.post('/register', async (req, res) => {
-  const { username, email, phoneNumber, password, memberCode } = req.body;
-  
-  if (!username || !password || (!email && !phoneNumber)) {
-  return res.status(400).json({ error: 'Missing username, password, and either email or phone number' });
-}
 
-if (phoneNumber && !memberCode) {
-  return res.status(400).json({ error: 'Member code required for Telegram signup' });
-}
-    return res.status(400).json({ error: 'Missing username, password, and either email or phone number' });
-  }
+  const { username, password, email, phoneNumber, memberCode } = req.body;
 
-  // Generate a demo email if using phone
-  const targetEmail = email ? email : `${phoneNumber.replace(/[^0-9+]/g, '')}@phone.demo`;
+  if (!username || !password || (!email && !phoneNumber)) {
+    return res.status(400).json({
+      error: 'Missing username, password, and either email or phone number'
+    });
+  }
+
+  // Generate a demo email if using phone
+  const targetEmail = email ? email : `${phoneNumber.replace(/[^0-9+]/g, '')}@phone.demo`;
 
   try {
     // Check duplicate email / telegram demo email
@@ -64,9 +61,12 @@ if (phoneNumber && !memberCode) {
     }
 
     const otp = crypto.randomInt(100000, 999999).toString();
-    const newUser = await pool.query(
+
+const hashedPassword = await bcrypt.hash(password, 10);
+
+const newUser = await pool.query(
   'INSERT INTO users (username, email, password, balance, otp, verified, member_code) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
-  [username, targetEmail, password, 0, otp, false, memberCode || null]
+  [username, targetEmail, hashedPassword, 0, otp, false, memberCode || null]
 );
     const userId = newUser.rows[0].id;
 
