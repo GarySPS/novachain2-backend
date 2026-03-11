@@ -18,129 +18,118 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Register (random unique ID version, with resend OTP for unverified)
+// Register (Handles both Email and Phone signups)
 router.post('/register', async (req, res) => {
-  const { username, email, password } = req.body;
-  if (!username || !email || !password) {
-    return res.status(400).json({ error: 'Missing username, email or password' });
-  }
-  try {
-    // Check duplicate email
-    const { rows: existing } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (existing.length > 0) {
-      const user = existing[0];
-      if (!user.verified) {
+  const { username, email, phoneNumber, password } = req.body;
+  
+  if (!username || !password || (!email && !phoneNumber)) {
+    return res.status(400).json({ error: 'Missing username, password, and either email or phone number' });
+  }
 
-        // User exists but not verified: re-send OTP and inform user
-        const otp = crypto.randomInt(100000, 999999).toString();
-        await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, email]);
-        
-        // Re-send OTP
-        const mailOptions = {
-          from: process.env.EMAIL_USER,
-          to: email,
-          subject: 'NovaChain OTP Verification',
-          text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`
-        };
-        transporter.sendMail(mailOptions, (err) => {
-          if (err) console.error('❌ OTP email error:', err);
-        });
-        return res.status(200).json({ 
-          message: 'Account already exists but not verified. New OTP sent. Please check your email.' 
-        });
-      } else {
-        // Already registered & verified
-        return res.status(409).json({ error: 'This email is already registered. Please log in.' });
-      }
-    }
+  // Generate a demo email if using phone
+  const targetEmail = email ? email : `${telegramNumber.replace(/[^0-9+]/g, '')}@phone.demo`;
 
-    // If here, email does not exist: create user
-    const plainPassword = password; // <-- No bcrypt hash
-    const otp = crypto.randomInt(100000, 999999).toString();
+  try {
+    // Check duplicate email / telegram demo email
+    const { rows: existing } = await pool.query('SELECT * FROM users WHERE email = $1', [targetEmail]);
+    if (existing.length > 0) {
+      const user = existing[0];
+      if (!user.verified) {
+        const otp = crypto.randomInt(100000, 999999).toString();
+        await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, targetEmail]);
+        
+        if (email) {
+          const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: targetEmail,
+            subject: 'NovaChain OTP Verification',
+            text: `Hello ${user.username}, your OTP code is: ${otp}`
+          };
+          transporter.sendMail(mailOptions, (err) => {
+            if (err) console.error('❌ OTP email error:', err);
+          });
+          return res.status(200).json({ unverified: true, message: 'Account exists but not verified. New OTP sent.' });
+        } else {
+          return res.status(200).json({ unverified: true, message: 'Account exists but pending admin approval.' });
+        }
+      } else {
+        return res.status(409).json({ error: 'This account is already registered. Please log in.' });
+      }
+    }
 
-    // Insert user (let database generate the 'id') and get the new id back
-const newUser = await pool.query(
-  'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-  [username, email, password, 0, otp, false]
-);
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const newUser = await pool.query(
+      'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [username, targetEmail, password, 0, otp, false]
+    );
+    const userId = newUser.rows[0].id;
 
-// Get the new user's ID to use for inserting balances
-const userId = newUser.rows[0].id;
+    const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
+    await Promise.all(
+      coins.map((coin) => pool.query(`INSERT INTO user_balances (user_id, coin, balance) VALUES ($1, $2, 0)`, [userId, coin]))
+    );
 
-
-    // Insert balances for all coins (multi-coin support)
-    const coins = ["USDT", "BTC", "ETH", "SOL", "XRP", "TON"];
-    await Promise.all(
-      coins.map((coin) => 
-        pool.query(
-          `INSERT INTO user_balances (user_id, coin, balance) VALUES ($1, $2, 0)`,
-          [userId, coin]
-        )
-      )
-    );
-
-    // Send OTP Email
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: 'NovaChain OTP Verification',
-      text: `Hello ${username}, your OTP code is: ${otp}`
-    };
-    transporter.sendMail(mailOptions, (err) => {
-      if (err) console.error('❌ OTP email error:', err);
-    });
-
-    res.status(201).json({ message: 'User registered! OTP sent.', userId });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    if (email) {
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: targetEmail,
+        subject: 'NovaChain OTP Verification',
+        text: `Hello ${username}, your OTP code is: ${otp}`
+      };
+      transporter.sendMail(mailOptions, (err) => {
+        if (err) console.error('❌ OTP email error:', err);
+      });
+      res.status(201).json({ message: 'User registered! OTP sent.', userId });
+    } else {
+      res.status(201).json({ message: 'Account created! Pending Admin approval.', userId });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-
-
-
-// Login (returns JWT, supports email or username)
+// Login (returns JWT, supports email, username, or telegram number)
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const { rows } = await pool.query(
-      `SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($1)`,
-      [email]
-    );
-    const user = rows[0];
-    if (!user) {
-      return res.status(400).json({ error: 'Invalid email or password' });
-    }
+  const { email, password } = req.body; 
+  
+  // Auto-format if user typed a phone number instead of an email or username
+  const loginIdentifier = (!email.includes('@') && email.match(/^\+?[0-9]+$/)) 
+    ? `${email.replace(/[^0-9+]/g, '')}@phone.demo` 
+    : email;
 
-    let match = false;
-    if (user.password.startsWith("$2b$")) {
-      // bcrypt hash
-      match = await bcrypt.compare(password, user.password);
-    } else {
-      // plain text fallback for legacy users
-      match = (password === user.password);
-    }
-    if (!match) {
-      return res.status(400).json({ error: 'Invalid email or password' });
-    }
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($2)`,
+      [loginIdentifier, email]
+    );
+    const user = rows[0];
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
 
-    if (user.verified === false || user.verified === 0) {
-      return res.status(403).json({ error: "Please verify your email with OTP before logging in." });
-    }
-    // Create JWT token
-    const payload = { id: user.id, username: user.username, email: user.email };
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({
-      token,
-      user: {
-        id: "NC-" + String(user.id).padStart(7, "0"),
-        username: user.username,
-        email: user.email
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
-  }
+    let match = false;
+    if (user.password.startsWith("$2b$")) {
+      match = await bcrypt.compare(password, user.password);
+    } else {
+      match = (password === user.password);
+    }
+    if (!match) return res.status(400).json({ error: 'Invalid credentials' });
+
+    if (user.verified === false || user.verified === 0) {
+      return res.status(403).json({ error: "Please verify your email or wait for Admin approval before logging in." });
+    }
+
+    const payload = { id: user.id, username: user.username, email: user.email };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({
+      token,
+      user: {
+        id: "NC-" + String(user.id).padStart(7, "0"),
+        username: user.username,
+        email: user.email
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 
