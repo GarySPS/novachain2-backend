@@ -1,4 +1,4 @@
-// routes/convert.js — Free live prices version (robust, TON alias, 3 fallbacks)
+// routes/convert.js
 const express = require("express");
 const router = express.Router();
 const pool = require("../db");
@@ -11,7 +11,7 @@ const CG_ID = {
   ETH: "ethereum",
   SOL: "solana",
   XRP: "ripple",
-  TON: "the-open-network", // some endpoints still use this, we add a toncoin fallback below
+  TON: "the-open-network",
   USDT: "tether",
 };
 
@@ -20,50 +20,35 @@ function normalizeSymbol(input) {
   if (!input) return "";
   let s = String(input).trim().toUpperCase().replace(/\s+/g, "");
 
-  // split composite pairs like "TON/USDT" or "eth-usd"
   if (s.includes("/")) s = s.split("/")[0];
   if (s.includes("-")) s = s.split("-")[0];
-
-  // only strip the suffix if there's something BEFORE it
   if (s !== "USDT" && s.endsWith("USDT")) s = s.slice(0, -4);
-  if (s !== "USD"  && s.endsWith("USD"))  s = s.slice(0, -3);
+  if (s !== "USD" && s.endsWith("USD")) s = s.slice(0, -3);
 
   return s;
 }
 
-// unified live USD price with 3 fallbacks (CoinGecko → Binance → Coinbase)
+// unified live USD price with fallbacks
 async function getSpotUSD(symbol) {
   const sym = normalizeSymbol(symbol);
 
-  // 1) CoinGecko (with TON alias fallback to "toncoin")
+  // 1) CoinGecko
   try {
     let id = CG_ID[sym];
-    if (!id && sym === "TON") id = "toncoin"; // alias
-    if (id === "the-open-network") {
-      // try the canonical id first
-      try {
-        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
-        const { data } = await axios.get(url, { timeout: 8000 });
-        const p = Number(data?.[id]?.usd);
-        if (isFinite(p) && p > 0) return p;
-      } catch {
-        /* fall through to alias */
-      }
-      // alias attempt
-      const alias = "toncoin";
-      const url2 = `https://api.coingecko.com/api/v3/simple/price?ids=${alias}&vs_currencies=usd`;
-      const { data: d2 } = await axios.get(url2, { timeout: 8000 });
-      const p2 = Number(d2?.[alias]?.usd);
-      if (isFinite(p2) && p2 > 0) return p2;
-    } else if (id) {
+    if (!id && sym === "TON") id = "the-open-network";
+    
+    if (id) {
       const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
-      const { data } = await axios.get(url, { timeout: 8000 });
+      const { data } = await axios.get(url, { 
+        timeout: 8000,
+        headers: { 'Accept': 'application/json', 'User-Agent': 'NovaChain/1.0' }
+      });
       const p = Number(data?.[id]?.usd);
       if (isFinite(p) && p > 0) return p;
     }
   } catch {}
 
-  // 2) Binance (USDT proxy)
+  // 2) Binance
   try {
     const url = `https://api.binance.com/api/v3/ticker/price?symbol=${sym}USDT`;
     const { data } = await axios.get(url, { timeout: 8000 });
@@ -71,7 +56,7 @@ async function getSpotUSD(symbol) {
     if (isFinite(p) && p > 0) return p;
   } catch {}
 
-  // 3) Coinbase (USD spot)
+  // 3) Coinbase
   try {
     const url = `https://api.coinbase.com/v2/prices/${sym}-USD/spot`;
     const { data } = await axios.get(url, {
@@ -82,14 +67,27 @@ async function getSpotUSD(symbol) {
     if (isFinite(p) && p > 0) return p;
   } catch {}
 
+  // 4) Static fallback
+  const fallbacks = {
+    BTC: 65000,
+    ETH: 3400,
+    SOL: 140,
+    XRP: 0.60,
+    TON: 7.0,
+    USDT: 1.0,
+  };
+  
+  if (fallbacks[sym]) {
+    return fallbacks[sym];
+  }
+
   throw new Error("PRICE_UNAVAILABLE");
 }
 
-// simple decimals by coin for display/storage (feel free to adjust)
 function coinDecimals(sym) {
   if (sym === "USDT") return 2;
   if (sym === "XRP" || sym === "TON") return 4;
-  return 8; // BTC/ETH/SOL etc.
+  return 8;
 }
 
 router.post("/", authenticateToken, async (req, res) => {
@@ -105,41 +103,35 @@ router.post("/", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Invalid input" });
     }
 
-    // only allow USDT <-> coin (same as before)
     if (fromSym === toSym) {
       return res.status(400).json({ error: "Cannot convert to same coin" });
     }
+    
     const allowed = ["BTC", "ETH", "SOL", "XRP", "TON", "USDT"];
     if (!allowed.includes(fromSym) || !allowed.includes(toSym)) {
       return res.status(400).json({ error: "Invalid coin" });
     }
+    
     if (!(fromSym === "USDT" || toSym === "USDT")) {
       return res.status(400).json({ error: "Only USDT <-> coin conversions allowed." });
     }
 
-    // live rate (USD per coin)
     let rateUSD;
     if (fromSym === "USDT") {
-      // buying the target coin with USDT → need target coin USD price
       rateUSD = await getSpotUSD(toSym);
     } else {
-      // selling a coin to USDT → need that coin USD price
       rateUSD = await getSpotUSD(fromSym);
     }
 
-    // compute received
     let received;
     if (fromSym === "USDT") {
-      // USDT -> coin
       received = amt / rateUSD;
       received = Number(received.toFixed(coinDecimals(toSym)));
     } else {
-      // coin -> USDT
       received = amt * rateUSD;
       received = Number(received.toFixed(coinDecimals("USDT")));
     }
 
-    // balance check
     const { rows } = await pool.query(
       "SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2",
       [user_id, fromSym]
@@ -149,25 +141,37 @@ router.post("/", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Insufficient balance." });
     }
 
-    // update balances (simple two updates; wrap in transaction if you want strict atomicity)
-    await pool.query(
-      "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3",
-      [amt, user_id, fromSym]
-    );
-    await pool.query(
-      `INSERT INTO user_balances (user_id, coin, balance)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (user_id, coin)
-       DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance`,
-      [user_id, toSym, received]
-    );
+    // Use transaction for atomicity
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      await client.query(
+        "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3",
+        [amt, user_id, fromSym]
+      );
+      
+      await client.query(
+        `INSERT INTO user_balances (user_id, coin, balance)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, coin)
+         DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance`,
+        [user_id, toSym, received]
+      );
 
-    // record conversion
-    await pool.query(
-      `INSERT INTO conversions (user_id, from_coin, to_coin, amount, received, rate)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [user_id, fromSym, toSym, amt, received, rateUSD]
-    );
+      await client.query(
+        `INSERT INTO conversions (user_id, from_coin, to_coin, amount, received, rate)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [user_id, fromSym, toSym, amt, received, rateUSD]
+      );
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
 
     res.json({ success: true, received, rate: rateUSD });
   } catch (err) {
