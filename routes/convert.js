@@ -9,9 +9,8 @@ const axios = require("axios");
 const CG_ID = {
   BTC: "bitcoin",
   ETH: "ethereum",
-  SOL: "solana",
-  XRP: "ripple",
-  TON: "the-open-network",
+  BNB: "binancecoin",
+  USDC: "usd-coin",
   USDT: "tether",
 };
 
@@ -67,13 +66,11 @@ async function getSpotUSD(symbol) {
     if (isFinite(p) && p > 0) return p;
   } catch {}
 
-  // 4) Static fallback
   const fallbacks = {
     BTC: 65000,
     ETH: 3400,
-    SOL: 140,
-    XRP: 0.60,
-    TON: 7.0,
+    BNB: 600,
+    USDC: 1.0,
     USDT: 1.0,
   };
   
@@ -107,7 +104,7 @@ router.post("/", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Cannot convert to same coin" });
     }
     
-    const allowed = ["BTC", "ETH", "SOL", "XRP", "TON", "USDT"];
+    const allowed = ["BTC", "ETH", "BNB", "USDC", "USDT"];
     if (!allowed.includes(fromSym) || !allowed.includes(toSym)) {
       return res.status(400).json({ error: "Invalid coin" });
     }

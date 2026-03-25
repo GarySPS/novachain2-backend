@@ -178,6 +178,83 @@ app.use((req, res) => {
 
 // --------- START SERVER ---------
 const PORT = process.env.PORT || 5000;
+
+// =====================================================================
+// AI EARN WALLET: AUTOMATED DAILY PAYOUT ENGINE
+// =====================================================================
+const cron = require('node-cron');
+
+// This schedules the script to run every single day at Midnight (00:00) server time.
+cron.schedule('0 0 * * *', async () => {
+  console.log("🤖 [AI EARN] Waking up to distribute daily yields...");
+  
+  try {
+    // 1. Fetch live prices from Binance to calculate USD values
+    const prices = { USDT: 1, USDC: 1 };
+    const fallbacks = { BTC: 65000, ETH: 3400, BNB: 600 };
+    
+    for (const coin of ["BTC", "ETH", "BNB"]) {
+      try {
+        const { data } = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${coin}USDT`);
+        prices[coin] = parseFloat(data.price);
+      } catch (err) {
+        prices[coin] = fallbacks[coin]; // Use fallback if Binance is blocked
+      }
+    }
+
+    // 2. Get every user's savings balance
+    const { rows } = await pool.query("SELECT user_id, coin, balance FROM earn_wallet WHERE balance > 0");
+    
+    // Group balances by user
+    const users = {};
+    rows.forEach(row => {
+      if (!users[row.user_id]) users[row.user_id] = [];
+      users[row.user_id].push(row);
+    });
+
+    // 3. Calculate and distribute yields per user
+    let usersPaid = 0;
+
+    for (const userId in users) {
+      let totalUsd = 0;
+      
+      // Calculate total USD in this user's earn wallet
+      users[userId].forEach(asset => {
+        const coinPrice = prices[asset.coin] || 0;
+        totalUsd += parseFloat(asset.balance) * coinPrice;
+      });
+
+      // Determine Monthly Tier
+      let monthlyRate = 0;
+      if (totalUsd >= 100000) monthlyRate = 0.10; // 10%
+      else if (totalUsd >= 10000) monthlyRate = 0.07; // 7%
+      else if (totalUsd >= 1000) monthlyRate = 0.04; // 4%
+
+      // If they qualify for a tier, pay them!
+      if (monthlyRate > 0) {
+        const dailyRate = monthlyRate / 30; // Break monthly rate into a daily cut
+        
+        for (const asset of users[userId]) {
+          const yieldAmount = parseFloat(asset.balance) * dailyRate;
+          
+          // Add the newly generated coins to their database balance
+          await pool.query(
+            "UPDATE earn_wallet SET balance = balance + $1 WHERE user_id = $2 AND coin = $3",
+            [yieldAmount, userId, asset.coin]
+          );
+        }
+        usersPaid++;
+      }
+    }
+    
+    console.log(`✅ [AI EARN] Successfully distributed yields to ${usersPaid} users.`);
+    
+  } catch (error) {
+    console.error("❌ [AI EARN] Daily payout failed:", error.message);
+  }
+});
+// =====================================================================
+
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
