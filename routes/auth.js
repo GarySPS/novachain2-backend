@@ -96,49 +96,49 @@ const newUser = await pool.query(
 
 // Login (returns JWT, supports email, username, or telegram number)
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body; 
-  
+  const { email, password } = req.body; 
+  
   // Auto-format if user typed a phone number instead of an email or username
   const loginIdentifier = (!email.includes('@') && email.match(/^\+?[0-9]+$/)) 
     ? `${email.replace(/[^0-9+]/g, '')}@phone.demo` 
     : email;
 
-  try {
-    const { rows } = await pool.query(
-      `SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($2)`,
-      [loginIdentifier, email]
-    );
-    const user = rows[0];
-    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($2)`,
+      [loginIdentifier, email]
+    );
+    const user = rows[0];
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
 
-    let match = false;
-    if (user.password.startsWith("$2b$")) {
-      match = await bcrypt.compare(password, user.password);
-    } else {
-      match = (password === user.password);
-    }
-    if (!match) return res.status(400).json({ error: 'Invalid credentials' });
+    let match = false;
+    if (user.password.startsWith("$2b$")) {
+      match = await bcrypt.compare(password, user.password);
+    } else {
+      match = (password === user.password);
+    }
+    if (!match) return res.status(400).json({ error: 'Invalid credentials' });
 
-    if (user.verified === false || user.verified === 0) {
-      return res.status(403).json({ error: "Please verify your email or wait for Admin approval before logging in." });
-    }
+    if (user.verified === false || user.verified === 0) {
+      return res.status(403).json({ error: "Please verify your email or wait for Admin approval before logging in." });
+    }
 
-    const payload = { id: user.id, username: user.username, email: user.email };
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({
-      token,
-      user: {
-        id: "NC-" + String(user.id).padStart(7, "0"),
-        username: user.username,
-        email: user.email
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
-  }
+    const payload = { id: user.id, username: user.username, email: user.email };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+    
+    res.json({
+      token,
+      user: {
+        id: "NC-" + String(user.id).padStart(7, "0"),
+        username: user.username,
+        email: user.email,
+        language: user.language || 'en'  // Add this line
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
-
-
 
 
 // OTP Verification (POSTGRES BOOLEAN SAFE)
@@ -294,7 +294,8 @@ router.post('/web3-login', async (req, res) => {
         id: "NC-" + String(user.id).padStart(7, "0"),
         username: user.username,
         email: user.email,
-        walletAddress: walletAddress
+        walletAddress: walletAddress,
+        language: user.language || 'en'
       }
     });
 

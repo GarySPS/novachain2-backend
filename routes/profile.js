@@ -32,9 +32,9 @@ const upload = multer({
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, username, email, avatar, referral FROM users WHERE id = $1",
-      [req.user.id]
-    );
+  "SELECT id, username, email, avatar, referral, language FROM users WHERE id = $1",
+  [req.user.id]
+);
     const row = result.rows[0];
     if (!row) return res.status(404).json({ error: "User not found" });
 
@@ -53,15 +53,16 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 
     res.json({
-      user: {
-        id: "NC-" + String(row.id).padStart(7, "0"),
-        username: row.username,
-        email: row.email,
-        balance: total_usd,
-        avatar: avatarUrl,   // <--- always a full URL or default!
-        referral: row.referral || ""
-      }
-    });
+  user: {
+    id: "NC-" + String(row.id).padStart(7, "0"),
+    username: row.username,
+    email: row.email,
+    balance: total_usd,
+    avatar: avatarUrl,
+    referral: row.referral || "",
+    language: row.language || "en"
+  }
+});
   } catch (err) {
     console.error("❌ /api/profile error:", err);
     res.status(500).json({ error: "Database error" });
@@ -164,6 +165,29 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     res.json({ success: true, message: "Password changed successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to change password" });
+  }
+});
+
+// -------- POST /api/profile/language - Update user's language preference --------
+router.post('/language', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { language } = req.body;
+  
+  // Validate language
+  const validLanguages = ['en', 'zh', 'es'];
+  if (!language || !validLanguages.includes(language)) {
+    return res.status(400).json({ error: 'Invalid language. Must be en, zh, or es' });
+  }
+  
+  try {
+    await pool.query(
+      'UPDATE users SET language = $1 WHERE id = $2',
+      [language, userId]
+    );
+    res.json({ success: true, language });
+  } catch (err) {
+    console.error('Language update error:', err);
+    res.status(500).json({ error: 'Failed to update language' });
   }
 });
 
