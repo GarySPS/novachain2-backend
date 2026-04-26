@@ -42,201 +42,65 @@ function isCrypto(apiSymbol) {
 
 // --- Caches ---
 const symbolCache = {};
-const LIST_REFRESH_MS = 60000;
+const LIST_REFRESH_MS = 3000;
 const SYMBOL_STALE_OK_MS = 5 * 60_000;
 
 // --- Routes ---
 
 /* GET /api/prices/:symbol - Handles Crypto, Forex, and Commodities */
 router.get("/:symbol", async (req, res) => {
-  const requestedApiSymbol = req.params.symbol.toLowerCase(); // e.g., 'bitcoin', 'xau', 'eurusd'
-  const now = Date.now();
-
-  console.log(`Received price request for: ${requestedApiSymbol}`);
-
-  // --- Check Cache First ---
-  if (symbolCache[requestedApiSymbol] && now - symbolCache[requestedApiSymbol].t < LIST_REFRESH_MS) {
-    console.log(`Serving cached data for ${requestedApiSymbol}`);
-    return res.json({
-      symbol: requestedApiSymbol,
-      ...symbolCache[requestedApiSymbol],
-      cached: true
-    });
-  }
-
-  let priceData = null;
-
   try {
-    // Check if it's Forex or Commodity first
-    if (isForexOrCommodity(requestedApiSymbol)) {
-        console.log(`Identified ${requestedApiSymbol} as Forex/Commodity. Using Twelve Data.`);
-        if (!TWELVE_API_KEY) throw new Error("Twelve Data API Key not configured");
+    const symbol = req.params.symbol.toLowerCase();
 
-        const twelveSymbol = TWELVE_SYMBOL[requestedApiSymbol];
-        if (!twelveSymbol) throw new Error(`No Twelve Data symbol mapping for ${requestedApiSymbol}`);
+    const map = {
+  bitcoin: "BTCUSDT",
+  ethereum: "ETHUSDT",
+  tether: "USDTUSDT",
+  solana: "SOLUSDT",
+  ripple: "XRPUSDT",
+  toncoin: "TONUSDT",
+};
 
-        // --- Fetch from Twelve Data ---
-        let currentPrice = null;
-        let high_24h = null;
-        let low_24h = null;
-        let volume_24h = null;
-        let percent_change_24h = null;
-
-        try {
-            // 1. Get current price
-            const priceUrl = `https://api.twelvedata.com/price?symbol=${twelveSymbol}&apikey=${TWELVE_API_KEY}`;
-            console.log(`Fetching Twelve Data price for ${requestedApiSymbol} (${twelveSymbol})`);
-            const { data: priceResponse } = await axios.get(priceUrl, { timeout: 4000 });
-            currentPrice = Number(priceResponse?.price);
-
-            // 2. Get 24h stats
-            const quoteUrl = `https://api.twelvedata.com/quote?symbol=${twelveSymbol}&apikey=${TWELVE_API_KEY}`;
-            console.log(`Fetching Twelve Data quote for ${requestedApiSymbol} (${twelveSymbol})`);
-            const { data: quoteResponse } = await axios.get(quoteUrl, { timeout: 4000 });
-
-            if (quoteResponse) {
-                high_24h = Number(quoteResponse.high);
-                low_24h = Number(quoteResponse.low);
-                percent_change_24h = Number(quoteResponse.percent_change);
-                volume_24h = Number(quoteResponse.volume); 
-            }
-
-        } catch (tdErr) {
-            console.warn(`Twelve Data request failed for ${requestedApiSymbol}: ${tdErr.message}`);
-            currentPrice = null;
-        }
-
-        // --- Check for failure and use synthetic data ---
-        if (!isFinite(currentPrice) || currentPrice <= 0) {
-            console.warn(`⚠️ Twelve Data failed for ${requestedApiSymbol}. Using synthetic fallback.`);
-            priceData = getSyntheticData(requestedApiSymbol);
-        } else {
-            priceData = {
-                price: currentPrice,
-                high_24h: isFinite(high_24h) ? high_24h : null,
-                low_24h: isFinite(low_24h) ? low_24h : null,
-                volume_24h: isFinite(volume_24h) ? volume_24h : null,
-                percent_change_24h: isFinite(percent_change_24h) ? percent_change_24h : null,
-            };
-        }
-        
-        console.log(`Mapped priceData for ${requestedApiSymbol}:`, priceData);
-    
-    } else if (isCrypto(requestedApiSymbol)) {
-        // --- Fetch Crypto Data using CoinGecko - FIXED ENDPOINT ---
-        console.log(`Identified ${requestedApiSymbol} as Crypto.`);
-        const coingeckoId = CG_ID[requestedApiSymbol];
-
-        if (!coingeckoId) {
-          throw new Error(`Unsupported crypto symbol: ${requestedApiSymbol}`);
-        }
-
-        try {
-          // FIX: Use the simple/price endpoint instead of markets
-          const cgUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_24hr_high_low=true`;
-          console.log(`Fetching CoinGecko data for ${coingeckoId} from: ${cgUrl}`);
-          
-          const { data: cgData } = await axios.get(cgUrl, { 
-            timeout: 8000,
-            headers: {
-              'Accept': 'application/json',
-              'User-Agent': 'NovaChain/1.0'
-            }
-          });
-          
-          console.log(`Received CoinGecko response for ${coingeckoId}:`, JSON.stringify(cgData));
-
-          if (!cgData || !cgData[coingeckoId]) {
-            throw new Error(`No data found from CoinGecko for ${coingeckoId}`);
-          }
-          
-          const coinData = cgData[coingeckoId];
-          const currentPrice = coinData.usd;
-          
-          // CoinGecko doesn't provide high/low in this endpoint, so we'll approximate
-          const changePercent = coinData.usd_24h_change || 0;
-          
-          priceData = {
-            price: Number(currentPrice),
-            high_24h: currentPrice * (1 + Math.abs(changePercent) / 200), // Approx high
-            low_24h: currentPrice * (1 - Math.abs(changePercent) / 200),  // Approx low
-            volume_24h: coinData.usd_24h_vol || 0,
-            percent_change_24h: changePercent,
-          };
-          
-        } catch (cgErr) {
-          console.warn(`CoinGecko request failed for ${requestedApiSymbol}: ${cgErr.message}`);
-          // Try Binance as fallback for crypto
-          try {
-            const binanceSymbol = requestedApiSymbol === 'bitcoin' ? 'BTCUSDT' :
-                                 requestedApiSymbol === 'ethereum' ? 'ETHUSDT' :
-                                 requestedApiSymbol === 'solana' ? 'SOLUSDT' :
-                                 requestedApiSymbol === 'ripple' ? 'XRPUSDT' :
-                                 requestedApiSymbol === 'toncoin' || requestedApiSymbol === 'ton' ? 'TONUSDT' : null;
-            
-            if (binanceSymbol) {
-              const binanceUrl = `https://api.binance.com/api/v3/ticker/24hr?symbol=${binanceSymbol}`;
-              const { data: binanceData } = await axios.get(binanceUrl, { timeout: 5000 });
-              
-              priceData = {
-                price: parseFloat(binanceData.lastPrice),
-                high_24h: parseFloat(binanceData.highPrice),
-                low_24h: parseFloat(binanceData.lowPrice),
-                volume_24h: parseFloat(binanceData.quoteVolume),
-                percent_change_24h: parseFloat(binanceData.priceChangePercent),
-              };
-            }
-          } catch (binanceErr) {
-            console.warn(`Binance fallback also failed for ${requestedApiSymbol}`);
-          }
-        }
-
-        // --- Check for failure and use synthetic data ---
-        if (!priceData || !isFinite(priceData.price) || priceData.price <= 0) {
-          console.warn(`⚠️ All crypto APIs failed for ${requestedApiSymbol}. Using synthetic fallback.`);
-          priceData = getSyntheticData(requestedApiSymbol); 
-        }
-
-        console.log(`Mapped priceData for ${coingeckoId}:`, priceData);
-
-    } else {
-        // --- Neither known Crypto nor Forex/Commodity ---
-        throw new Error(`Unsupported symbol/id: ${requestedApiSymbol}`);
+    const pair = map[symbol];
+    if (!pair) {
+      return res.status(400).json({ error: "Unsupported symbol" });
     }
 
-    // --- Validate and Respond ---
-    if (!priceData) {
-        throw new Error(`Invalid or zero price data processed for ${requestedApiSymbol}`);
-    }
-
-    // Update cache
-    symbolCache[requestedApiSymbol] = { t: now, ...priceData };
-    console.log(`Successfully processed data for ${requestedApiSymbol}, updating cache.`);
-
-    return res.json({ symbol: requestedApiSymbol, ...priceData });
-
-  } catch (err) {
-    console.error(`CRITICAL ERROR processing ${requestedApiSymbol}:`, err.message);
-    
-    // Try to serve stale cache
-    if (symbolCache[requestedApiSymbol] && now - symbolCache[requestedApiSymbol].t <= SYMBOL_STALE_OK_MS) {
-      console.warn(`Serving stale cache for ${requestedApiSymbol} due to error.`);
-      return res.json({
-        symbol: requestedApiSymbol,
-        ...symbolCache[requestedApiSymbol],
-        stale: true
-      });
-    }
-
-    // --- Final Error - Serve synthetic data as last resort ---
+    // ✅ Binance FIRST (FAST)
     try {
-      console.warn(`Serving synthetic data as last resort for ${requestedApiSymbol}.`);
-      const syntheticData = getSyntheticData(requestedApiSymbol);
-      return res.json({ symbol: requestedApiSymbol, ...syntheticData });
-    } catch (finalErr) {
-      console.error(`FATAL: Could not even generate synthetic data for ${requestedApiSymbol}.`, finalErr.message);
-      return res.status(503).json({ error: "LIVE_DATA_UNAVAILABLE", symbol: requestedApiSymbol, detail: err.message });
+      const r = await axios.get(
+        `https://api.binance.com/api/v3/ticker/price?symbol=${pair}`,
+        { timeout: 3000 }
+      );
+
+      return res.json({
+        price: Number(r.data.price),
+        source: "binance",
+      });
+    } catch (e) {
+      console.log("Binance failed, fallback to CoinGecko");
     }
+
+    // ✅ Fallback (only if Binance fails)
+    try {
+      const cg = await axios.get(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${symbol}&vs_currencies=usd`,
+        { timeout: 5000 }
+      );
+
+      const price = cg.data?.[symbol]?.usd;
+      if (!price) throw new Error("No CG price");
+
+      return res.json({
+        price: Number(price),
+        source: "coingecko",
+      });
+    } catch (e) {
+      return res.status(500).json({ error: "Price fetch failed" });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
