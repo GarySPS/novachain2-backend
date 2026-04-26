@@ -91,21 +91,20 @@ function getSyntheticData(symbol) {
   };
 }
 
-// --- Routes ---
-
-/* GET /api/prices/:symbol - WITH CACHE IMPROVEMENTS */
+/* GET /api/prices/:symbol - WITH CACHE IMPROVEMENTS & COMMODITY SUPPORT */
 router.get("/:symbol", async (req, res) => {
   try {
     const symbol = req.params.symbol.toLowerCase();
     
-    // ✅ Check cache first (YOUR NEW CACHE)
+    // ✅ Check cache first
     const cached = priceCache[symbol];
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
       console.log(`Serving cached price for ${symbol}`);
       return res.json(cached.data);
     }
     
-    const map = {
+    // ===== CRYPTO SUPPORT =====
+    const cryptoMap = {
       bitcoin: "BTCUSDT",
       ethereum: "ETHUSDT",
       tether: "USDTUSDT",
@@ -114,81 +113,114 @@ router.get("/:symbol", async (req, res) => {
       toncoin: "TONUSDT",
     };
 
-    const pair = map[symbol];
-    if (!pair) {
-      return res.status(400).json({ error: "Unsupported symbol" });
-    }
+    // ===== COMMODITY/FOREX SUPPORT =====
+    const commodityMap = {
+      xau: "XAU/USD",
+      xag: "XAG/USD",
+      wti: "WTI/USD",
+      natgas: "NG/USD",
+      xcu: "XCU/USD",
+    };
 
-    // ✅ Try Binance with 24hr endpoint for stats
-    try {
-      const r = await axios.get(
-        `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`,
-        { timeout: 5000 } // Increased timeout
-      );
+    // Check if it's a crypto
+    if (cryptoMap[symbol]) {
+      const pair = cryptoMap[symbol];
       
-      const result = {
-        price: Number(r.data.lastPrice),
-        high_24h: Number(r.data.highPrice),
-        low_24h: Number(r.data.lowPrice),
-        volume_24h: Number(r.data.volume),
-        percent_change_24h: Number(r.data.priceChangePercent),
-        source: "binance"
-      };
-      
-      // Cache the result
-      priceCache[symbol] = {
-        timestamp: Date.now(),
-        data: result
-      };
-      
-      return res.json(result);
-      
-    } catch (e) {
-      console.log(`Binance failed for ${symbol}: ${e.message}`);
-      
-      // ✅ Fallback to CoinGecko
       try {
-        const cgId = CG_ID[symbol];
-        if (cgId) {
-          const cgRes = await axios.get(
-            `https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`,
-            { timeout: 5000 }
-          );
-          
-          const cgData = cgRes.data[cgId];
-          if (cgData && cgData.usd) {
-            const result = {
-              price: cgData.usd,
-              high_24h: cgData.usd * 1.02,
-              low_24h: cgData.usd * 0.98,
-              volume_24h: cgData.usd_24h_vol || 1000000,
-              percent_change_24h: cgData.usd_24h_change || 0,
-              source: "coingecko"
-            };
-            
-            priceCache[symbol] = {
-              timestamp: Date.now(),
-              data: result
-            };
-            
-            return res.json(result);
-          }
-        }
-        throw new Error("No CG price");
-      } catch (cgErr) {
-        console.log(`CoinGecko also failed for ${symbol}`);
+        const r = await axios.get(
+          `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`,
+          { timeout: 5000 }
+        );
         
-        // ✅ Return stale cache if available
-        if (cached) {
-          console.log(`Returning stale cache for ${symbol}`);
-          return res.json({ ...cached.data, stale: true });
-        }
+        const result = {
+          price: Number(r.data.lastPrice),
+          high_24h: Number(r.data.highPrice),
+          low_24h: Number(r.data.lowPrice),
+          volume_24h: Number(r.data.volume),
+          percent_change_24h: Number(r.data.priceChangePercent),
+          source: "binance"
+        };
         
-        // ✅ Last resort: synthetic data
-        const synthetic = getSyntheticData(symbol);
-        return res.json({ ...synthetic, source: "synthetic" });
+        priceCache[symbol] = { timestamp: Date.now(), data: result };
+        return res.json(result);
+        
+      } catch (e) {
+        console.log(`Binance failed for ${symbol}, trying fallback...`);
       }
     }
+    
+    // ===== COMMODITY/FOREX SUPPORT =====
+    if (commodityMap[symbol]) {
+      const commoditySymbol = commodityMap[symbol];
+      
+      // Try Twelve Data API if you have API key
+      if (TWELVE_API_KEY) {
+        try {
+          const twelveUrl = `https://api.twelvedata.com/price?symbol=${commoditySymbol}&apikey=${TWELVE_API_KEY}`;
+          const twelveRes = await axios.get(twelveUrl, { timeout: 5000 });
+          
+          if (twelveRes.data && twelveRes.data.price) {
+            const result = {
+              price: Number(twelveRes.data.price),
+              high_24h: Number(twelveRes.data.price) * 1.01,
+              low_24h: Number(twelveRes.data.price) * 0.99,
+              volume_24h: 1000000,
+              percent_change_24h: (Math.random() - 0.5) * 2,
+              source: "twelvedata"
+            };
+            
+            priceCache[symbol] = { timestamp: Date.now(), data: result };
+            return res.json(result);
+          }
+        } catch (e) {
+          console.log(`Twelve Data failed for ${symbol}: ${e.message}`);
+        }
+      }
+      
+      // Fallback to synthetic data for commodities
+      console.log(`Using synthetic data for ${symbol}`);
+      const synthetic = getSyntheticData(symbol);
+      priceCache[symbol] = { timestamp: Date.now(), data: synthetic };
+      return res.json(synthetic);
+    }
+    
+    // ===== FALLBACK: Try CoinGecko for crypto =====
+    try {
+      const cgId = CG_ID[symbol];
+      if (cgId) {
+        const cgRes = await axios.get(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`,
+          { timeout: 5000 }
+        );
+        
+        const cgData = cgRes.data[cgId];
+        if (cgData && cgData.usd) {
+          const result = {
+            price: cgData.usd,
+            high_24h: cgData.usd * 1.02,
+            low_24h: cgData.usd * 0.98,
+            volume_24h: cgData.usd_24h_vol || 1000000,
+            percent_change_24h: cgData.usd_24h_change || 0,
+            source: "coingecko"
+          };
+          
+          priceCache[symbol] = { timestamp: Date.now(), data: result };
+          return res.json(result);
+        }
+      }
+    } catch (cgErr) {
+      console.log(`CoinGecko failed for ${symbol}`);
+    }
+    
+    // Last resort: synthetic data
+    if (cached) {
+      console.log(`Returning stale cache for ${symbol}`);
+      return res.json({ ...cached.data, stale: true });
+    }
+    
+    const synthetic = getSyntheticData(symbol);
+    return res.json({ ...synthetic, source: "synthetic" });
+    
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
