@@ -1,24 +1,99 @@
-//routes>earn.js
-
+// routes/earn.js
 const express = require('express');
 const router = express.Router();
+const axios = require('axios');
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 
+// Helper function to get current price with fallbacks
+async function getCoinPriceUSD(coin) {
+  if (coin === "USDT") return 1;
+  
+  try {
+    // Try to get from prices table
+    const priceRes = await pool.query(
+      "SELECT price_usd FROM prices WHERE symbol = $1 ORDER BY updated_at DESC LIMIT 1",
+      [coin]
+    );
+    
+    if (priceRes.rows[0]) {
+      return parseFloat(priceRes.rows[0].price_usd);
+    }
+    
+    // Fallback: Fetch from your price API
+    const apiMap = {
+      'BTC': 'bitcoin',
+      'ETH': 'ethereum',
+      'SOL': 'solana', 
+      'XRP': 'ripple',
+      'TON': 'toncoin'
+    };
+    
+    const apiSymbol = apiMap[coin];
+    if (apiSymbol) {
+      const priceApiRes = await axios.get(
+        `${process.env.MAIN_API_BASE || 'http://localhost:5000'}/api/prices/${apiSymbol}`,
+        { timeout: 5000 }
+      );
+      
+      const priceUSD = priceApiRes.data.price;
+      
+      // Cache in prices table for next time
+      await pool.query(
+        `INSERT INTO prices (symbol, price_usd, updated_at) 
+         VALUES ($1, $2, NOW()) 
+         ON CONFLICT (symbol) 
+         DO UPDATE SET price_usd = $2, updated_at = NOW()`,
+        [coin, priceUSD]
+      );
+      
+      return priceUSD;
+    }
+    
+    // Last resort: reasonable defaults
+    const defaults = { BTC: 50000, ETH: 3000, SOL: 150, XRP: 0.5, TON: 5 };
+    return defaults[coin] || 1;
+    
+  } catch (error) {
+    console.error(`Price fetch error for ${coin}:`, error.message);
+    const defaults = { BTC: 50000, ETH: 3000, SOL: 150, XRP: 0.5, TON: 5 };
+    return defaults[coin] || 1;
+  }
+}
+
+// Helper to calculate interest (5% APY)
+function calculateInterest(usdAmount, days = 30) {
+  const APY = 0.05;
+  return usdAmount * APY * (days / 365);
+}
+
 // ---
 // GET /api/earn/balance
-// Fetches the user's savings wallet balances
 // ---
 router.get('/balance', authenticateToken, async (req, res) => {
   const userId = req.user.id;
 
   try {
     const { rows } = await pool.query(
-      "SELECT coin as symbol, balance FROM earn_wallet WHERE user_id = $1 AND balance > 0",
+      "SELECT coin, balance FROM earn_wallet WHERE user_id = $1 AND balance > 0",
       [userId]
     );
     
-    res.json({ assets: rows });
+    const assetsWithInterest = await Promise.all(rows.map(async (asset) => {
+      const priceUSD = await getCoinPriceUSD(asset.coin);
+      const usdValue = parseFloat(asset.balance) * priceUSD;
+      const estimatedInterest = calculateInterest(usdValue, 30);
+      
+      return {
+        symbol: asset.coin,
+        balance: asset.balance,
+        usd_value: usdValue,
+        estimated_interest_30d: estimatedInterest,
+        price_usd: priceUSD
+      };
+    }));
+    
+    res.json({ assets: assetsWithInterest });
   } catch (error) {
     console.error("Error fetching earn balance:", error);
     res.status(500).json({ error: "Server error" });
@@ -26,36 +101,18 @@ router.get('/balance', authenticateToken, async (req, res) => {
 });
 
 // ---
-// POST /api/earn/deposit (Save)
-// Moves funds from the main 'user_balances' wallet to the 'earn_wallet'
-// MINIMUM DEPOSIT: $3,000 USD equivalent
+// POST /api/earn/deposit
 // ---
 router.post('/deposit', authenticateToken, async (req, res) => {
   const userId = req.user.id;
   const { coin, amount } = req.body;
   const depositAmount = parseFloat(amount);
 
-  // Basic validation
   if (!coin || isNaN(depositAmount) || depositAmount <= 0) {
     return res.status(400).json({ success: false, error: "Invalid coin or amount." });
   }
 
-  // 🔴 NEW: Minimum deposit validation ($3,000 USD equivalent)
-  // Get current price of the coin to check USD value
-  let priceUSD = 1; // Default for USDT
-  if (coin !== "USDT") {
-    try {
-      const priceRes = await pool.query(
-        "SELECT price_usd FROM prices WHERE symbol = $1 ORDER BY updated_at DESC LIMIT 1",
-        [coin]
-      );
-      priceUSD = priceRes.rows[0] ? parseFloat(priceRes.rows[0].price_usd) : 1;
-    } catch (err) {
-      console.error("Error fetching price:", err);
-      priceUSD = 1;
-    }
-  }
-  
+  const priceUSD = await getCoinPriceUSD(coin);
   const usdValue = depositAmount * priceUSD;
   
   if (usdValue < 3000) {
@@ -70,7 +127,7 @@ router.post('/deposit', authenticateToken, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 1. Check if user has enough in their MAIN wallet (user_balances)
+    // Check main wallet balance
     const balanceRes = await client.query(
       "SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2 FOR UPDATE",
       [userId, coin]
@@ -82,13 +139,13 @@ router.post('/deposit', authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, error: "Insufficient funds in main wallet." });
     }
 
-    // 2. Subtract from MAIN wallet (user_balances)
-    const updateResult = await client.query(
-      "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3 RETURNING balance",
+    // Subtract from main wallet
+    await client.query(
+      "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3",
       [depositAmount, userId, coin]
     );
 
-    // 3. Add to EARN wallet
+    // Add to earn wallet (using your existing table structure)
     await client.query(
       `INSERT INTO earn_wallet (user_id, coin, balance) 
        VALUES ($1, $2, $3) 
@@ -97,7 +154,7 @@ router.post('/deposit', authenticateToken, async (req, res) => {
       [userId, coin, depositAmount]
     );
 
-    // 4. OPTIONAL: Log the transaction for audit trail
+    // Log transaction (create earn_transactions table if you want this)
     await client.query(
       `INSERT INTO earn_transactions (user_id, coin, amount, type, usd_value, status, created_at)
        VALUES ($1, $2, $3, 'deposit', $4, 'completed', NOW())`,
@@ -106,7 +163,6 @@ router.post('/deposit', authenticateToken, async (req, res) => {
 
     await client.query('COMMIT');
     
-    // Return success with updated balances
     res.json({ 
       success: true,
       message: `Successfully deposited ${depositAmount} ${coin} to savings`,
@@ -115,7 +171,7 @@ router.post('/deposit', authenticateToken, async (req, res) => {
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error("Error in earn deposit transaction:", error);
+    console.error("Error in earn deposit:", error);
     res.status(500).json({ success: false, error: "Transaction failed. Please try again." });
   } finally {
     client.release();
@@ -123,8 +179,7 @@ router.post('/deposit', authenticateToken, async (req, res) => {
 });
 
 // ---
-// POST /api/earn/withdraw (Redeem)
-// Moves funds from the 'earn_wallet' back to the main 'user_balances' wallet
+// POST /api/earn/withdraw
 // ---
 router.post('/withdraw', authenticateToken, async (req, res) => {
   const userId = req.user.id;
@@ -135,12 +190,22 @@ router.post('/withdraw', authenticateToken, async (req, res) => {
     return res.status(400).json({ success: false, error: "Invalid coin or amount." });
   }
 
+  const priceUSD = await getCoinPriceUSD(coin);
+  const usdValue = redeemAmount * priceUSD;
+  
+  if (usdValue < 100) {
+    return res.status(400).json({ 
+      success: false, 
+      error: `Minimum withdrawal is $100 USD equivalent. Your withdrawal is worth $${usdValue.toFixed(2)} USD.` 
+    });
+  }
+
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
 
-    // 1. Check if user has enough in their EARN wallet
+    // Check earn wallet balance
     const earnRes = await client.query(
       "SELECT balance FROM earn_wallet WHERE user_id = $1 AND coin = $2 FOR UPDATE",
       [userId, coin]
@@ -152,13 +217,13 @@ router.post('/withdraw', authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, error: "Insufficient funds in savings." });
     }
 
-    // 2. Subtract from EARN wallet
+    // Subtract from earn wallet
     await client.query(
       "UPDATE earn_wallet SET balance = balance - $1 WHERE user_id = $2 AND coin = $3",
       [redeemAmount, userId, coin]
     );
 
-    // 3. Add to MAIN wallet (user_balances)
+    // Add to main wallet
     await client.query(
       `INSERT INTO user_balances (user_id, coin, balance) 
        VALUES ($1, $2, $3) 
@@ -167,19 +232,23 @@ router.post('/withdraw', authenticateToken, async (req, res) => {
       [userId, coin, redeemAmount]
     );
 
-    // 4. OPTIONAL: Log the transaction
+    // Log transaction
     await client.query(
-      `INSERT INTO earn_transactions (user_id, coin, amount, type, status, created_at)
-       VALUES ($1, $2, $3, 'withdraw', 'completed', NOW())`,
-      [userId, coin, redeemAmount]
+      `INSERT INTO earn_transactions (user_id, coin, amount, type, usd_value, status, created_at)
+       VALUES ($1, $2, $3, 'withdraw', $4, 'completed', NOW())`,
+      [userId, coin, redeemAmount, usdValue]
     );
 
     await client.query('COMMIT');
-    res.json({ success: true, message: `Successfully withdrew ${redeemAmount} ${coin} from savings` });
+    
+    res.json({ 
+      success: true, 
+      message: `Successfully withdrew ${redeemAmount} ${coin} from savings`
+    });
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error("Error in earn withdraw transaction:", error);
+    console.error("Error in earn withdraw:", error);
     res.status(500).json({ success: false, error: "Transaction failed. Please try again." });
   } finally {
     client.release();
@@ -187,13 +256,24 @@ router.post('/withdraw', authenticateToken, async (req, res) => {
 });
 
 // ---
-// OPTIONAL: GET /api/earn/transactions
-// Fetches user's earn transaction history
+// GET /api/earn/transactions
 // ---
 router.get('/transactions', authenticateToken, async (req, res) => {
   const userId = req.user.id;
   
   try {
+    // Check if earn_transactions table exists
+    const tableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'earn_transactions'
+      )
+    `);
+    
+    if (!tableCheck.rows[0].exists) {
+      return res.json({ transactions: [] });
+    }
+    
     const { rows } = await pool.query(
       `SELECT * FROM earn_transactions 
        WHERE user_id = $1 
@@ -204,7 +284,7 @@ router.get('/transactions', authenticateToken, async (req, res) => {
     res.json({ transactions: rows });
   } catch (error) {
     console.error("Error fetching earn transactions:", error);
-    res.status(500).json({ error: "Server error" });
+    res.json({ transactions: [] });
   }
 });
 

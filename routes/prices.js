@@ -1,10 +1,11 @@
-// routes/prices.js
+//routes>prices.js
+
 const express = require("express");
 const axios = require("axios");
 const router = express.Router();
 
 // --- Config ---
-const TWELVE_API_KEY = process.env.TWELVE_API_KEY; // Read Twelve Data key from .env
+const TWELVE_API_KEY = process.env.TWELVE_API_KEY;
 
 const CG_ID = {
   bitcoin: "bitcoin",
@@ -45,58 +46,148 @@ const symbolCache = {};
 const LIST_REFRESH_MS = 3000;
 const SYMBOL_STALE_OK_MS = 5 * 60_000;
 
+// ✅ ADD PRICE CACHE AT TOP
+const priceCache = {};
+const CACHE_DURATION = 5000; // 5 seconds
+
+const STATIC_PRICE_FALLBACKS = {
+  xau: 4157.1,
+  xag: 50.14,
+  wti: 57.95,
+  natgas: 4.67,
+  xcu: 5.12,
+  // Crypto defaults
+  bitcoin: 65000,
+  btc: 65000,
+  ethereum: 3400,
+  eth: 3400,
+  solana: 140,
+  sol: 140,
+  ripple: 0.60,
+  xrp: 0.60,
+  toncoin: 7.0,
+  ton: 7.0,
+  tether: 1.00,
+  usdt: 1.00,
+};
+
+function getSyntheticData(symbol) {
+  const base = STATIC_PRICE_FALLBACKS[symbol] || 100;
+  const rand = (Math.random() - 0.5) * 0.02;
+  const price = base * (1 + rand);
+  const high = price * (1 + 0.01);
+  const low = price * (1 - 0.01);
+  const volume = 1_000_000 * (1 + Math.random());
+  const change = (Math.random() - 0.5) * 2;
+  
+  const decimals = price < 1 ? 4 : 2;
+  
+  return {
+    price: Number(price.toFixed(decimals)),
+    high_24h: Number(high.toFixed(decimals)),
+    low_24h: Number(low.toFixed(decimals)),
+    volume_24h: Math.round(volume),
+    percent_change_24h: Number(change.toFixed(2)),
+  };
+}
+
 // --- Routes ---
 
-/* GET /api/prices/:symbol - Handles Crypto, Forex, and Commodities */
+/* GET /api/prices/:symbol - WITH CACHE IMPROVEMENTS */
 router.get("/:symbol", async (req, res) => {
   try {
     const symbol = req.params.symbol.toLowerCase();
-
+    
+    // ✅ Check cache first (YOUR NEW CACHE)
+    const cached = priceCache[symbol];
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      console.log(`Serving cached price for ${symbol}`);
+      return res.json(cached.data);
+    }
+    
     const map = {
-  bitcoin: "BTCUSDT",
-  ethereum: "ETHUSDT",
-  tether: "USDTUSDT",
-  solana: "SOLUSDT",
-  ripple: "XRPUSDT",
-  toncoin: "TONUSDT",
-};
+      bitcoin: "BTCUSDT",
+      ethereum: "ETHUSDT",
+      tether: "USDTUSDT",
+      solana: "SOLUSDT",
+      ripple: "XRPUSDT",
+      toncoin: "TONUSDT",
+    };
 
     const pair = map[symbol];
     if (!pair) {
       return res.status(400).json({ error: "Unsupported symbol" });
     }
 
-    // ✅ Binance FIRST (FAST)
+    // ✅ Try Binance with 24hr endpoint for stats
     try {
       const r = await axios.get(
-        `https://api.binance.com/api/v3/ticker/price?symbol=${pair}`,
-        { timeout: 3000 }
+        `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`,
+        { timeout: 5000 } // Increased timeout
       );
-
-      return res.json({
-        price: Number(r.data.price),
-        source: "binance",
-      });
+      
+      const result = {
+        price: Number(r.data.lastPrice),
+        high_24h: Number(r.data.highPrice),
+        low_24h: Number(r.data.lowPrice),
+        volume_24h: Number(r.data.volume),
+        percent_change_24h: Number(r.data.priceChangePercent),
+        source: "binance"
+      };
+      
+      // Cache the result
+      priceCache[symbol] = {
+        timestamp: Date.now(),
+        data: result
+      };
+      
+      return res.json(result);
+      
     } catch (e) {
-      console.log("Binance failed, fallback to CoinGecko");
-    }
-
-    // ✅ Fallback (only if Binance fails)
-    try {
-      const cg = await axios.get(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${symbol}&vs_currencies=usd`,
-        { timeout: 5000 }
-      );
-
-      const price = cg.data?.[symbol]?.usd;
-      if (!price) throw new Error("No CG price");
-
-      return res.json({
-        price: Number(price),
-        source: "coingecko",
-      });
-    } catch (e) {
-      return res.status(500).json({ error: "Price fetch failed" });
+      console.log(`Binance failed for ${symbol}: ${e.message}`);
+      
+      // ✅ Fallback to CoinGecko
+      try {
+        const cgId = CG_ID[symbol];
+        if (cgId) {
+          const cgRes = await axios.get(
+            `https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`,
+            { timeout: 5000 }
+          );
+          
+          const cgData = cgRes.data[cgId];
+          if (cgData && cgData.usd) {
+            const result = {
+              price: cgData.usd,
+              high_24h: cgData.usd * 1.02,
+              low_24h: cgData.usd * 0.98,
+              volume_24h: cgData.usd_24h_vol || 1000000,
+              percent_change_24h: cgData.usd_24h_change || 0,
+              source: "coingecko"
+            };
+            
+            priceCache[symbol] = {
+              timestamp: Date.now(),
+              data: result
+            };
+            
+            return res.json(result);
+          }
+        }
+        throw new Error("No CG price");
+      } catch (cgErr) {
+        console.log(`CoinGecko also failed for ${symbol}`);
+        
+        // ✅ Return stale cache if available
+        if (cached) {
+          console.log(`Returning stale cache for ${symbol}`);
+          return res.json({ ...cached.data, stale: true });
+        }
+        
+        // ✅ Last resort: synthetic data
+        const synthetic = getSyntheticData(symbol);
+        return res.json({ ...synthetic, source: "synthetic" });
+      }
     }
   } catch (err) {
     console.error(err);
@@ -168,47 +259,5 @@ router.get("/", async (req, res) => {
     return res.status(503).json({ error: "MARKET_DATA_UNAVAILABLE", message: "Could not fetch market list data." });
   }
 });
-
-const STATIC_PRICE_FALLBACKS = {
-  xau: 4157.1,
-  xag: 50.14,
-  wti: 57.95,
-  natgas: 4.67,
-  xcu: 5.12,
-  // Crypto defaults
-  bitcoin: 65000,
-  btc: 65000,
-  ethereum: 3400,
-  eth: 3400,
-  solana: 140,
-  sol: 140,
-  ripple: 0.60,
-  xrp: 0.60,
-  toncoin: 7.0,
-  ton: 7.0,
-  tether: 1.00,
-  usdt: 1.00,
-};
-
-function getSyntheticData(symbol) {
-  const base = STATIC_PRICE_FALLBACKS[symbol] || 100;
-  const rand = (Math.random() - 0.5) * 0.02; // ±1% jitter
-  const price = base * (1 + rand);
-  const high = price * (1 + 0.01);
-  const low = price * (1 - 0.01);
-  const volume = 1_000_000 * (1 + Math.random());
-  const change = (Math.random() - 0.5) * 2; // ±1% change
-  
-  // Format based on price magnitude
-  const decimals = price < 1 ? 4 : 2;
-  
-  return {
-    price: Number(price.toFixed(decimals)),
-    high_24h: Number(high.toFixed(decimals)),
-    low_24h: Number(low.toFixed(decimals)),
-    volume_24h: Math.round(volume),
-    percent_change_24h: Number(change.toFixed(2)),
-  };
-}
 
 module.exports = router;
