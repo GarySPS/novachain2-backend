@@ -123,7 +123,12 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: "Please verify your email or wait for Admin approval before logging in." });
     }
 
-    const payload = { id: user.id, username: user.username, email: user.email };
+    const payload = { 
+      id: user.id, 
+      username: user.username, 
+      email: user.email,
+      isImpersonated: false  // Normal login is not impersonation
+    };
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
     
     res.json({
@@ -132,7 +137,7 @@ router.post('/login', async (req, res) => {
         id: "NC-" + String(user.id).padStart(7, "0"),
         username: user.username,
         email: user.email,
-        language: user.language || 'en'  // Add this line
+        language: user.language || 'en'
       }
     });
   } catch (err) {
@@ -263,12 +268,12 @@ router.post('/web3-login', async (req, res) => {
 
     if (!user) {
       // 2. Create new Web3 user if they don't exist
-      const username = 'Web3_' + walletAddress.substring(2, 8); // e.g., Web3_1a2b3c
-      const dummyPassword = 'WEB3_LOGIN_NO_PASSWORD'; // They use their wallet to sign in, not a password
+      const username = 'Web3_' + walletAddress.substring(2, 8);
+      const dummyPassword = 'WEB3_LOGIN_NO_PASSWORD';
 
       const newUser = await pool.query(
         'INSERT INTO users (username, email, password, balance, otp, verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-        [username, web3Email, dummyPassword, 0, null, true] // verified is instantly true
+        [username, web3Email, dummyPassword, 0, null, true]
       );
       user = newUser.rows[0];
 
@@ -284,8 +289,13 @@ router.post('/web3-login', async (req, res) => {
       );
     }
 
-    // 4. Generate standard JWT token so the frontend handles them like a normal user
-    const payload = { id: user.id, username: user.username, email: user.email };
+    // 4. Generate standard JWT token
+    const payload = { 
+      id: user.id, 
+      username: user.username, 
+      email: user.email,
+      isImpersonated: false 
+    };
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
     
     res.json({
@@ -302,6 +312,137 @@ router.post('/web3-login', async (req, res) => {
   } catch (err) {
     console.error('Web3 Login Error:', err);
     res.status(500).json({ error: 'Database error during Web3 login' });
+  }
+});
+
+// ===== IMPERSONATION ROUTE - Admin login as user =====
+router.post('/impersonate', async (req, res) => {
+  const { userToken } = req.body;
+  
+  if (!userToken) {
+    return res.status(400).json({ error: 'No token provided' });
+  }
+  
+  try {
+    // Verify the impersonation token (sent from admin backend)
+    const decoded = jwt.verify(userToken, process.env.JWT_SECRET);
+    
+    // Check if this is an impersonation token
+    if (!decoded.isImpersonation) {
+      return res.status(403).json({ error: 'Invalid token type' });
+    }
+    
+    // Log the impersonation attempt
+    console.log(`⚠️ IMPERSONATION: Admin ${decoded.impersonatedBy?.email} is logging in as user ${decoded.email} (ID: ${decoded.id})`);
+    
+    // Get the full user data from database
+    const { rows } = await pool.query(
+      `SELECT id, username, email, verified, kyc_status, created_at, language 
+       FROM users WHERE id = $1`,
+      [decoded.id]
+    );
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = rows[0];
+    
+    // Check if user is verified/approved
+    if (user.verified === false || user.verified === 0) {
+      return res.status(403).json({ 
+        error: "User account is not verified. Cannot impersonate unverified users." 
+      });
+    }
+    
+    // Create a regular user session token (not the impersonation token)
+    const sessionToken = jwt.sign(
+      { 
+        id: user.id, 
+        username: user.username,
+        email: user.email,
+        isImpersonated: true,  // Flag to identify impersonated session
+        impersonatedBy: decoded.impersonatedBy
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    // Send back user data and new session token
+    res.json({
+      success: true,
+      token: sessionToken,
+      user: {
+        id: "NC-" + String(user.id).padStart(7, "0"),
+        username: user.username,
+        email: user.email,
+        language: user.language || 'en',
+        verified: user.verified,
+        kyc_status: user.kyc_status
+      },
+      isImpersonated: true,
+      impersonatedBy: decoded.impersonatedBy,
+      message: `Logged in as ${user.email}`
+    });
+    
+  } catch (error) {
+    console.error('Impersonation verification error:', error);
+    
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Impersonation token has expired' });
+    }
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid impersonation token' });
+    }
+    
+    res.status(500).json({ error: 'Failed to impersonate user' });
+  }
+});
+
+// Optional: Route to check current impersonation status
+router.get('/impersonation-status', authenticateToken, async (req, res) => {
+  try {
+    // Check if the current token has impersonation flag
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.json({ isImpersonated: false });
+    }
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    res.json({
+      isImpersonated: decoded.isImpersonated || false,
+      impersonatedBy: decoded.impersonatedBy || null,
+      message: decoded.isImpersonated ? 'You are viewing this account as an administrator' : 'Normal user session'
+    });
+    
+  } catch (error) {
+    res.json({ isImpersonated: false });
+  }
+});
+
+// Optional: Route to end impersonation (logout from impersonated session)
+router.post('/end-impersonation', authenticateToken, async (req, res) => {
+  try {
+    // Check if this is an impersonated session
+    const token = req.headers.authorization?.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    if (decoded.isImpersonated) {
+      // Log the end of impersonation
+      console.log(`🔚 Impersonation ended for user ${decoded.email} by admin ${decoded.impersonatedBy?.email}`);
+      
+      // You could also invalidate the token here if using a token blacklist
+      // For now, just return success and let frontend clear localStorage
+    }
+    
+    res.json({
+      success: true,
+      message: 'Impersonation session ended. Please log in again.'
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to end impersonation' });
   }
 });
 
