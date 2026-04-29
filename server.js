@@ -7,6 +7,8 @@ const fs = require('fs');
 const multer = require('multer');
 const path = require('path');
 const pool = require('./db');
+const axios = require('axios');
+const cron = require('node-cron');
 
 // JWT Middleware
 const { authenticateToken, authenticateAdminToken } = require('./middleware/auth');
@@ -183,7 +185,6 @@ const PORT = process.env.PORT || 5000;
 // =====================================================================
 // AI EARN WALLET: AUTOMATED DAILY PAYOUT ENGINE
 // =====================================================================
-const cron = require('node-cron');
 
 // This schedules the script to run every single day at Midnight (00:00) server time.
 cron.schedule('0 0 * * *', async () => {
