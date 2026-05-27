@@ -45,10 +45,17 @@ router.post(
 
 // --- Get all deposits (SECURED for admin view or user view) ---
 router.get('/', async (req, res) => {
-  // --- Admin view (checks for x-admin-token) ---
+
+// --- Admin view (checks for x-admin-token) ---
   if (req.headers['x-admin-token'] && req.headers['x-admin-token'] === process.env.ADMIN_API_TOKEN) {
     try {
-      const result = await pool.query('SELECT * FROM deposits ORDER BY created_at DESC');
+      // JOIN users table to get the email alongside the deposit details
+      const result = await pool.query(`
+        SELECT deposits.*, users.email as user_email 
+        FROM deposits 
+        LEFT JOIN users ON deposits.user_id = users.id 
+        ORDER BY deposits.created_at DESC
+      `);
       return res.json(result.rows);
     } catch (err) {
       return res.status(500).json({ error: 'Database error (admin)' });
