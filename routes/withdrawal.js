@@ -53,12 +53,16 @@ router.post('/', authenticateToken, async (req, res) => {
 
 // --- Get withdrawals (user: only own; admin: all) ---
 router.get('/', async (req, res) => {
-  // --- Admin view ---
+// --- Admin view ---
   if (req.headers['x-admin-token'] && req.headers['x-admin-token'] === ADMIN_API_TOKEN) {
     try {
-      const result = await pool.query(
-        'SELECT * FROM withdrawals ORDER BY created_at DESC'
-      );
+      // JOIN users table to get the email alongside the withdrawal details
+      const result = await pool.query(`
+        SELECT withdrawals.*, users.email as user_email 
+        FROM withdrawals 
+        LEFT JOIN users ON withdrawals.user_id = users.id 
+        ORDER BY withdrawals.created_at DESC
+      `);
       return res.json(result.rows);
     } catch (err) {
       return res.status(500).json({ error: 'Database error (admin)' });
