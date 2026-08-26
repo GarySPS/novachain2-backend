@@ -56,9 +56,9 @@ router.get('/', async (req, res) => {
 // --- Admin view ---
   if (req.headers['x-admin-token'] && req.headers['x-admin-token'] === ADMIN_API_TOKEN) {
     try {
-      // JOIN users table to get the email alongside the withdrawal details
+      // JOIN users table to get the email and username alongside the withdrawal details
       const result = await pool.query(`
-        SELECT withdrawals.*, users.email as user_email 
+        SELECT withdrawals.*, users.email as user_email, users.username 
         FROM withdrawals 
         LEFT JOIN users ON withdrawals.user_id = users.id 
         ORDER BY withdrawals.created_at DESC
