@@ -1,107 +1,70 @@
 // routes/earn.js
+
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 
-// Helper function to get current price with fallbacks
+// Helper function to get current price
 async function getCoinPriceUSD(coin) {
-  if (coin === "USDT") return 1;
+  if (coin === "USDT" || coin === "USDC") return 1;
   
   try {
-    // Try to get from prices table
     const priceRes = await pool.query(
       "SELECT price_usd FROM prices WHERE symbol = $1 ORDER BY updated_at DESC LIMIT 1",
       [coin]
     );
+    if (priceRes.rows[0]) return parseFloat(priceRes.rows[0].price_usd);
     
-    if (priceRes.rows[0]) {
-      return parseFloat(priceRes.rows[0].price_usd);
-    }
-    
-    // Fallback: Fetch from your price API
-    const apiMap = {
-      'BTC': 'bitcoin',
-      'ETH': 'ethereum',
-      'SOL': 'solana', 
-      'XRP': 'ripple',
-      'TON': 'toncoin'
-    };
-    
+    const apiMap = { 'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana', 'XRP': 'ripple', 'TON': 'toncoin', 'BNB': 'binancecoin' };
     const apiSymbol = apiMap[coin];
+    
     if (apiSymbol) {
       const priceApiRes = await axios.get(
         `${process.env.MAIN_API_BASE || 'http://localhost:5000'}/api/prices/${apiSymbol}`,
         { timeout: 5000 }
       );
-      
       const priceUSD = priceApiRes.data.price;
       
-      // Cache in prices table for next time
       await pool.query(
-        `INSERT INTO prices (symbol, price_usd, updated_at) 
-         VALUES ($1, $2, NOW()) 
-         ON CONFLICT (symbol) 
-         DO UPDATE SET price_usd = $2, updated_at = NOW()`,
+        `INSERT INTO prices (symbol, price_usd, updated_at) VALUES ($1, $2, NOW()) 
+         ON CONFLICT (symbol) DO UPDATE SET price_usd = $2, updated_at = NOW()`,
         [coin, priceUSD]
       );
-      
       return priceUSD;
     }
     
-    // Last resort: reasonable defaults
-    const defaults = { BTC: 50000, ETH: 3000, SOL: 150, XRP: 0.5, TON: 5 };
+    const defaults = { BTC: 60000, ETH: 3000, BNB: 600, SOL: 150, XRP: 0.5, TON: 5 };
     return defaults[coin] || 1;
-    
   } catch (error) {
     console.error(`Price fetch error for ${coin}:`, error.message);
-    const defaults = { BTC: 50000, ETH: 3000, SOL: 150, XRP: 0.5, TON: 5 };
+    const defaults = { BTC: 60000, ETH: 3000, BNB: 600, SOL: 150, XRP: 0.5, TON: 5 };
     return defaults[coin] || 1;
   }
 }
 
-// Helper to calculate interest (5% APY)
-function calculateInterest(usdAmount, days = 30) {
-  const APY = 0.05;
-  return usdAmount * APY * (days / 365);
-}
-
 // ---
 // GET /api/earn/balance
+// Fetch only USDT for the mining dashboard
 // ---
 router.get('/balance', authenticateToken, async (req, res) => {
   const userId = req.user.id;
-
   try {
     const { rows } = await pool.query(
-      "SELECT coin, balance FROM earn_wallet WHERE user_id = $1 AND balance > 0",
+      "SELECT coin, balance FROM earn_wallet WHERE user_id = $1 AND balance > 0 AND coin = 'USDT'",
       [userId]
     );
-    
-    const assetsWithInterest = await Promise.all(rows.map(async (asset) => {
-      const priceUSD = await getCoinPriceUSD(asset.coin);
-      const usdValue = parseFloat(asset.balance) * priceUSD;
-      const estimatedInterest = calculateInterest(usdValue, 30);
-      
-      return {
-        symbol: asset.coin,
-        balance: asset.balance,
-        usd_value: usdValue,
-        estimated_interest_30d: estimatedInterest,
-        price_usd: priceUSD
-      };
-    }));
-    
-    res.json({ assets: assetsWithInterest });
+    res.json({ assets: rows });
   } catch (error) {
-    console.error("Error fetching earn balance:", error);
+    console.error("Error fetching mining balance:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
 // ---
 // POST /api/earn/deposit
+// Deduct chosen asset -> Auto-convert -> Credit USDT to Mining Wallet
 // ---
 router.post('/deposit', authenticateToken, async (req, res) => {
   const userId = req.user.id;
@@ -113,21 +76,21 @@ router.post('/deposit', authenticateToken, async (req, res) => {
   }
 
   const priceUSD = await getCoinPriceUSD(coin);
-  const usdValue = depositAmount * priceUSD;
+  const usdtEquivalent = depositAmount * priceUSD;
   
-  if (usdValue < 3000) {
+  // Tier 1 minimum is $50
+  if (usdtEquivalent < 50) {
     return res.status(400).json({ 
       success: false, 
-      error: `Minimum deposit is $3,000 USD equivalent. Your deposit is worth $${usdValue.toFixed(2)} USD.` 
+      error: `Minimum allocation is $50. Your deposit is worth $${usdtEquivalent.toFixed(2)}.` 
     });
   }
 
   const client = await pool.connect();
-
   try {
     await client.query('BEGIN');
 
-    // Check main wallet balance
+    // 1. Check main wallet balance
     const balanceRes = await client.query(
       "SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2 FOR UPDATE",
       [userId, coin]
@@ -136,43 +99,35 @@ router.post('/deposit', authenticateToken, async (req, res) => {
     const currentBalance = parseFloat(balanceRes.rows[0]?.balance || 0);
     if (currentBalance < depositAmount) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ success: false, error: "Insufficient funds in main wallet." });
+      return res.status(400).json({ success: false, error: "Insufficient funds in Spot Wallet." });
     }
 
-    // Subtract from main wallet
+    // 2. Subtract original asset from Spot wallet
     await client.query(
       "UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND coin = $3",
       [depositAmount, userId, coin]
     );
 
-    // Add to earn wallet (using your existing table structure)
+    // 3. Add USDT equivalent to Mining wallet (Auto-Convert)
     await client.query(
       `INSERT INTO earn_wallet (user_id, coin, balance) 
-       VALUES ($1, $2, $3) 
+       VALUES ($1, 'USDT', $2) 
        ON CONFLICT (user_id, coin) 
-       DO UPDATE SET balance = earn_wallet.balance + $3`,
-      [userId, coin, depositAmount]
-    );
-
-    // Log transaction (create earn_transactions table if you want this)
-    await client.query(
-      `INSERT INTO earn_transactions (user_id, coin, amount, type, usd_value, status, created_at)
-       VALUES ($1, $2, $3, 'deposit', $4, 'completed', NOW())`,
-      [userId, coin, depositAmount, usdValue]
+       DO UPDATE SET balance = earn_wallet.balance + $2`,
+      [userId, usdtEquivalent]
     );
 
     await client.query('COMMIT');
-    
     res.json({ 
       success: true,
-      message: `Successfully deposited ${depositAmount} ${coin} to savings`,
-      usd_value: usdValue
+      message: `Successfully allocated ${depositAmount} ${coin} (≈ $${usdtEquivalent.toFixed(2)} USDT) to AI Mining.`,
+      usd_value: usdtEquivalent
     });
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error("Error in earn deposit:", error);
-    res.status(500).json({ success: false, error: "Transaction failed. Please try again." });
+    console.error("Error in mining deposit:", error);
+    res.status(500).json({ success: false, error: "Allocation failed. Please try again." });
   } finally {
     client.release();
   }
@@ -180,110 +135,77 @@ router.post('/deposit', authenticateToken, async (req, res) => {
 
 // ---
 // POST /api/earn/withdraw
+// Withdraw USDT back to Spot Wallet
 // ---
 router.post('/withdraw', authenticateToken, async (req, res) => {
   const userId = req.user.id;
-  const { coin, amount } = req.body;
-  const redeemAmount = parseFloat(amount);
+  // Always withdraw as USDT
+  const coin = 'USDT'; 
+  const { amount } = req.body;
+  const withdrawAmount = parseFloat(amount);
 
-  if (!coin || isNaN(redeemAmount) || redeemAmount <= 0) {
-    return res.status(400).json({ success: false, error: "Invalid coin or amount." });
-  }
-
-  const priceUSD = await getCoinPriceUSD(coin);
-  const usdValue = redeemAmount * priceUSD;
-  
-  if (usdValue < 100) {
-    return res.status(400).json({ 
-      success: false, 
-      error: `Minimum withdrawal is $100 USD equivalent. Your withdrawal is worth $${usdValue.toFixed(2)} USD.` 
-    });
+  if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
+    return res.status(400).json({ success: false, error: "Invalid amount." });
   }
 
   const client = await pool.connect();
-
   try {
     await client.query('BEGIN');
 
-    // Check earn wallet balance
+    // 1. Check mining wallet balance
     const earnRes = await client.query(
       "SELECT balance FROM earn_wallet WHERE user_id = $1 AND coin = $2 FOR UPDATE",
       [userId, coin]
     );
 
     const currentEarnBalance = parseFloat(earnRes.rows[0]?.balance || 0);
-    if (currentEarnBalance < redeemAmount) {
+    if (currentEarnBalance < withdrawAmount) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ success: false, error: "Insufficient funds in savings." });
+      return res.status(400).json({ success: false, error: "Insufficient deployed capital." });
     }
 
-    // Subtract from earn wallet
+    // 2. Subtract from Mining wallet
     await client.query(
       "UPDATE earn_wallet SET balance = balance - $1 WHERE user_id = $2 AND coin = $3",
-      [redeemAmount, userId, coin]
+      [withdrawAmount, userId, coin]
     );
 
-    // Add to main wallet
+    // 3. Add USDT back to Spot wallet
     await client.query(
       `INSERT INTO user_balances (user_id, coin, balance) 
        VALUES ($1, $2, $3) 
        ON CONFLICT (user_id, coin) 
        DO UPDATE SET balance = user_balances.balance + $3`,
-      [userId, coin, redeemAmount]
-    );
-
-    // Log transaction
-    await client.query(
-      `INSERT INTO earn_transactions (user_id, coin, amount, type, usd_value, status, created_at)
-       VALUES ($1, $2, $3, 'withdraw', $4, 'completed', NOW())`,
-      [userId, coin, redeemAmount, usdValue]
+      [userId, coin, withdrawAmount]
     );
 
     await client.query('COMMIT');
-    
     res.json({ 
       success: true, 
-      message: `Successfully withdrew ${redeemAmount} ${coin} from savings`
+      message: `Successfully withdrew $${withdrawAmount.toFixed(2)} USDT back to Spot Wallet.`
     });
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error("Error in earn withdraw:", error);
-    res.status(500).json({ success: false, error: "Transaction failed. Please try again." });
+    console.error("Error in mining withdraw:", error);
+    res.status(500).json({ success: false, error: "Withdrawal failed. Please try again." });
   } finally {
     client.release();
   }
 });
 
 // ---
-// GET /api/earn/transactions
+// GET /api/earn/transactions (Optional Log)
 // ---
 router.get('/transactions', authenticateToken, async (req, res) => {
   const userId = req.user.id;
-  
   try {
-    // Check if earn_transactions table exists
-    const tableCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_name = 'earn_transactions'
-      )
-    `);
+    const tableCheck = await pool.query(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'earn_transactions')`);
+    if (!tableCheck.rows[0].exists) return res.json({ transactions: [] });
     
-    if (!tableCheck.rows[0].exists) {
-      return res.json({ transactions: [] });
-    }
-    
-    const { rows } = await pool.query(
-      `SELECT * FROM earn_transactions 
-       WHERE user_id = $1 
-       ORDER BY created_at DESC 
-       LIMIT 50`,
-      [userId]
-    );
+    const { rows } = await pool.query("SELECT * FROM earn_transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50", [userId]);
     res.json({ transactions: rows });
   } catch (error) {
-    console.error("Error fetching earn transactions:", error);
     res.json({ transactions: [] });
   }
 });
