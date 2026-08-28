@@ -44,6 +44,22 @@ router.post('/', authenticateToken, async (req, res) => {
       [user_id, coin, amount, address] // 4 values
     );
 
+    // --- SEND GMAIL NOTIFICATION ---
+    try {
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+      });
+      transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: process.env.ADMIN_EMAIL,
+        subject: `New Withdrawal Request: ${amount} ${coin}`,
+        text: `A user requested a withdrawal.\n\nUser ID: ${user_id}\nAmount: ${amount} ${coin}\nWallet Address: ${address}`
+      }).catch(err => console.error("Email error:", err));
+    } catch (mailErr) {}
+    // -------------------------------
+
     res.json({ success: true, id: result.rows[0].id });
   } catch (err) {
     console.error("Withdrawal request error:", err);

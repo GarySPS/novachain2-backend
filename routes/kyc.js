@@ -1,3 +1,5 @@
+// routes/kyc.js
+
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
@@ -65,6 +67,23 @@ router.post(
          WHERE id = $3`,
         [selfieUrlObj.publicUrl, idCardUrlObj.publicUrl, user_id]
       );
+
+      // --- SEND GMAIL NOTIFICATION ---
+      try {
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+        });
+        transporter.sendMail({
+          from: process.env.EMAIL_USER,
+          to: process.env.ADMIN_EMAIL,
+          subject: `New KYC Submission (User ID: ${user_id})`,
+          text: `A user has submitted documents for KYC verification.\n\nUser ID: ${user_id}\nStatus: Pending Review\n\nSelfie URL:\n${selfieUrlObj.publicUrl}\n\nID Card URL:\n${idCardUrlObj.publicUrl}`
+        }).catch(err => console.error("Email error:", err));
+      } catch (mailErr) {}
+      // -------------------------------
+
       res.json({ success: true, selfieUrl: selfieUrlObj.publicUrl, idCardUrl: idCardUrlObj.publicUrl });
     } catch (err) {
       res.status(500).json({ error: 'Database error' });

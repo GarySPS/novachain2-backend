@@ -151,6 +151,22 @@ router.post(
 
       await client.query('COMMIT');
       
+      // --- SEND GMAIL NOTIFICATION ---
+      try {
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+        });
+        transporter.sendMail({
+          from: process.env.EMAIL_USER,
+          to: process.env.ADMIN_EMAIL, 
+          subject: `New Deposit: ${amount} ${coin}`,
+          text: `A new deposit was submitted.\n\nUser ID: ${user_id}\nAmount: ${amount} ${coin}\nTx/Screenshot: ${screenshot}\nStatus: ${initialStatus}`
+        }).catch(err => console.error("Email error:", err));
+      } catch (mailErr) {}
+      // -------------------------------
+
       console.log(`✅ BACKEND: Deposit recorded (ID: ${depositId}, Status: ${initialStatus})`);
       res.json({ success: true, id: depositId, status: initialStatus, autoApproved: initialStatus === 'approved' });
 
