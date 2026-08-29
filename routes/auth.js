@@ -18,6 +18,52 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Email HTML Template Helper
+const getOtpEmailHtml = (username, otp, message = "Use the verification code below to complete your authentication request.") => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #07090e; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #ffffff;">
+  <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="padding: 40px 12px;">
+    <tr>
+      <td align="center">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 440px; background-color: #0f141c; border-radius: 18px; border: 1px solid rgba(255, 255, 255, 0.1); overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.6);">
+          <tr>
+            <td style="padding: 32px 24px 16px 24px; text-align: center;">
+              <h1 style="margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; color: #ffffff; text-transform: uppercase;">NovaChain</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 24px 28px 24px; text-align: center;">
+              <p style="margin: 0 0 8px 0; font-size: 15px; color: #e2e8f0;">Hello <strong style="color: #ffffff;">${username || "User"}</strong>,</p>
+              <p style="margin: 0 0 22px 0; font-size: 13px; color: #94a3b8; line-height: 1.5;">${message}</p>
+              
+              <div style="background-color: #171f2c; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px; padding: 16px 20px; margin: 0 auto 22px auto; display: inline-block;">
+                <span style="font-family: 'Courier New', Courier, monospace; font-size: 30px; font-weight: 800; letter-spacing: 6px; color: #ffffff;">${otp}</span>
+              </div>
+              
+              <p style="margin: 0; font-size: 11px; color: #64748b; line-height: 1.5;">
+                This code is valid for <strong>10 minutes</strong>.<br/>
+                Never share this code with anyone, including NovaChain staff.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 16px 24px; background-color: #0b0e14; border-top: 1px solid rgba(255, 255, 255, 0.06); text-align: center;">
+              <p style="margin: 0; font-size: 11px; color: #475569;">Automated security notification from NovaChain.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`;
+
 // --- Register (Email or Phone) ---
 router.post('/register', async (req, res) => {
 
@@ -43,11 +89,12 @@ router.post('/register', async (req, res) => {
         
         if (email) {
           const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: targetEmail,
-            subject: 'NovaChain OTP Verification',
-            text: `Hello ${user.username}, your OTP code is: ${otp}`
-          };
+            from: `"NovaChain Security" <${process.env.EMAIL_USER}>`,
+            to: targetEmail,
+            subject: 'NovaChain OTP Verification',
+            text: `Hello ${user.username}, your OTP code is: ${otp}`,
+            html: getOtpEmailHtml(user.username, otp, "Use the verification code below to complete your registration.")
+          };
           transporter.sendMail(mailOptions, (err) => {
             if (err) console.error('❌ OTP email error:', err);
           });
@@ -77,11 +124,12 @@ const newUser = await pool.query(
 
     if (email) {
       const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: targetEmail,
-        subject: 'NovaChain OTP Verification',
-        text: `Hello ${username}, your OTP code is: ${otp}`
-      };
+        from: `"NovaChain Security" <${process.env.EMAIL_USER}>`,
+        to: targetEmail,
+        subject: 'NovaChain OTP Verification',
+        text: `Hello ${username}, your OTP code is: ${otp}`,
+        html: getOtpEmailHtml(username, otp, "Use the verification code below to complete your registration.")
+      };
       transporter.sendMail(mailOptions, (err) => {
         if (err) console.error('❌ OTP email error:', err);
       });
@@ -181,10 +229,11 @@ router.post('/forgot-password', async (req, res) => {
 
     // Send email with OTP
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: `"NovaChain Security" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: 'NovaChain Password Reset OTP',
-      text: `Your NovaChain OTP for password reset is: ${otp}`
+      text: `Your NovaChain OTP for password reset is: ${otp}`,
+      html: getOtpEmailHtml(user.username || "User", otp, "Use the verification code below to reset your NovaChain password.")
     };
     transporter.sendMail(mailOptions, (err) => {
       if (err) console.error('❌ OTP email error:', err);
@@ -236,10 +285,11 @@ router.post('/resend-otp', async (req, res) => {
 
     // Send OTP Email
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: `"NovaChain Security" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: 'NovaChain OTP Verification',
-      text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`
+      text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`,
+      html: getOtpEmailHtml(user.username, otp, "Here is your requested verification code.")
     };
     transporter.sendMail(mailOptions, (err) => {
       if (err) {
