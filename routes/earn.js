@@ -46,7 +46,7 @@ async function getCoinPriceUSD(coin) {
 
 // ---
 // GET /api/earn/balance
-// Fetch only USDT for the mining dashboard
+// Fetch USDT for the mining dashboard + Cycle Start time
 // ---
 router.get('/balance', authenticateToken, async (req, res) => {
   const userId = req.user.id;
@@ -55,7 +55,29 @@ router.get('/balance', authenticateToken, async (req, res) => {
       "SELECT coin, balance FROM earn_wallet WHERE user_id = $1 AND balance > 0 AND coin = 'USDT'",
       [userId]
     );
-    res.json({ assets: rows });
+    const balance = rows[0] ? parseFloat(rows[0].balance) : 0;
+
+    // Find the cycle start (first deposit since the last withdrawal)
+    const wdRes = await pool.query(
+      "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_WD' ORDER BY timestamp DESC LIMIT 1",
+      [userId]
+    );
+    const lastWdTime = wdRes.rows[0] ? wdRes.rows[0].timestamp : new Date(0);
+
+    const depRes = await pool.query(
+      "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_DEP' AND timestamp > $2 ORDER BY timestamp ASC LIMIT 1",
+      [userId, lastWdTime]
+    );
+    
+    let cycleStart = null;
+    if (depRes.rows[0]) {
+      cycleStart = depRes.rows[0].timestamp;
+    } else if (balance > 0) {
+      // Fallback for your existing $100 before this update
+      cycleStart = new Date(Date.now() - 48 * 60 * 60 * 1000); 
+    }
+
+    res.json({ assets: rows, cycleStart });
   } catch (error) {
     console.error("Error fetching mining balance:", error);
     res.status(500).json({ error: "Server error" });
@@ -64,7 +86,7 @@ router.get('/balance', authenticateToken, async (req, res) => {
 
 // ---
 // POST /api/earn/deposit
-// Deduct chosen asset -> Auto-convert -> Credit USDT to Mining Wallet
+// Deduct chosen asset -> Auto-convert -> Credit USDT to Mining Wallet + 24H Rule
 // ---
 router.post('/deposit', authenticateToken, async (req, res) => {
   const userId = req.user.id;
@@ -78,17 +100,36 @@ router.post('/deposit', authenticateToken, async (req, res) => {
   const priceUSD = await getCoinPriceUSD(coin);
   const usdtEquivalent = depositAmount * priceUSD;
   
-  // Tier 1 minimum is $50
-  if (usdtEquivalent < 50) {
-    return res.status(400).json({ 
-      success: false, 
-      error: `Minimum allocation is $50. Your deposit is worth $${usdtEquivalent.toFixed(2)}.` 
-    });
-  }
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Check 24-hour rule using balance_history
+    const wdRes = await client.query(
+      "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_WD' ORDER BY timestamp DESC LIMIT 1", 
+      [userId]
+    );
+    const lastWdTime = wdRes.rows[0] ? wdRes.rows[0].timestamp : new Date(0);
+    
+    const depRes = await client.query(
+      "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_DEP' AND timestamp > $2 ORDER BY timestamp ASC LIMIT 1", 
+      [userId, lastWdTime]
+    );
+
+    let isWithin24h = false;
+    if (depRes.rows[0]) {
+      const hoursSince = (Date.now() - new Date(depRes.rows[0].timestamp).getTime()) / (1000 * 60 * 60);
+      if (hoursSince <= 24) isWithin24h = true;
+    }
+
+    // Tier 1 minimum is $50 (ONLY if not within an active 24h cycle)
+    if (!isWithin24h && usdtEquivalent < 50) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        success: false, 
+        error: `Minimum allocation is $50. Your deposit is worth $${usdtEquivalent.toFixed(2)}.` 
+      });
+    }
 
     // 1. Check main wallet balance
     const balanceRes = await client.query(
@@ -117,6 +158,12 @@ router.post('/deposit', authenticateToken, async (req, res) => {
       [userId, usdtEquivalent]
     );
 
+    // Log Deposit Event to track the 24-hour cycle
+    await client.query(
+      "INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp) VALUES ($1, 'EARN_DEP', $2, 1, NOW())", 
+      [userId, usdtEquivalent]
+    );
+
     await client.query('COMMIT');
     res.json({ 
       success: true,
@@ -135,7 +182,7 @@ router.post('/deposit', authenticateToken, async (req, res) => {
 
 // ---
 // POST /api/earn/withdraw
-// Withdraw USDT back to Spot Wallet
+// Withdraw USDT back to Spot Wallet + Reset Cycle
 // ---
 router.post('/withdraw', authenticateToken, async (req, res) => {
   const userId = req.user.id;
@@ -177,6 +224,12 @@ router.post('/withdraw', authenticateToken, async (req, res) => {
        ON CONFLICT (user_id, coin) 
        DO UPDATE SET balance = user_balances.balance + $3`,
       [userId, coin, withdrawAmount]
+    );
+
+    // Log Withdrawal Event to explicitly break the cycle timer
+    await client.query(
+      "INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp) VALUES ($1, 'EARN_WD', $2, 1, NOW())", 
+      [userId, withdrawAmount]
     );
 
     await client.query('COMMIT');
