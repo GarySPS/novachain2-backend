@@ -218,20 +218,31 @@ router.post('/forgot-password', async (req, res) => {
   if (!email) return res.status(400).json({ error: "Email required" });
 
   try {
-    // FIX: Match email regardless of uppercase/lowercase
-    const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    const cleanInput = email.trim();
+    // Search both columns, ignoring case and trailing spaces
+    const { rows } = await pool.query(
+      'SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER($1) OR LOWER(TRIM(username)) = LOWER($1)',
+      [cleanInput]
+    );
+    
     if (rows.length === 0) {
       return res.json({ message: "If this email exists, OTP sent" });
     }
-    const user = rows[0];
-    const userEmail = user.email; // Use the exact DB email casing
     
+    const user = rows[0];
     const otp = crypto.randomInt(100000, 999999).toString();
-    await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, userEmail]);
+    
+    // Update using ID for absolute precision
+    await pool.query('UPDATE users SET otp = $1 WHERE id = $2', [otp, user.id]);
+
+    // Fallback to the typed input if DB email is a phone/web3 dummy
+    const targetEmail = (user.email && !user.email.includes('.demo') && !user.email.includes('.novachain')) 
+      ? user.email 
+      : cleanInput;
 
     const mailOptions = {
       from: `"NovaChain Security" <${process.env.EMAIL_USER}>`,
-      to: userEmail,
+      to: targetEmail,
       subject: 'NovaChain Password Reset OTP',
       text: `Your NovaChain OTP for password reset is: ${otp}`,
       html: getOtpEmailHtml(user.username || "User", otp, "Use the verification code below to reset your NovaChain password.")
@@ -253,17 +264,18 @@ router.post('/reset-password', async (req, res) => {
   if (!email || !otp || !newPassword) return res.status(400).json({ error: "All fields required" });
 
   try {
-    // 1. Case-insensitive email search
-    const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    const cleanInput = email.trim();
+    const { rows } = await pool.query(
+      'SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER($1) OR LOWER(TRIM(username)) = LOWER($1)', 
+      [cleanInput]
+    );
+    
     if (rows.length === 0) return res.status(400).json({ error: "Invalid email or OTP" });
 
     const user = rows[0];
-    if (user.otp !== otp) return res.status(400).json({ error: "Invalid OTP" });
+    if (user.otp !== otp.trim()) return res.status(400).json({ error: "Invalid OTP" });
 
-    // 2. Hash the new password before saving it to the database
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // 3. Update using user.id for exact precision
     await pool.query('UPDATE users SET password = $1, otp = NULL WHERE id = $2', [hashedPassword, user.id]);
     
     return res.json({ message: "Password reset successful" });
@@ -279,24 +291,32 @@ router.post('/resend-otp', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Email is required.' });
 
   try {
-    // FIX: Match email regardless of uppercase/lowercase
-    const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    const cleanInput = email.trim();
+    const { rows } = await pool.query(
+      'SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER($1) OR LOWER(TRIM(username)) = LOWER($1)', 
+      [cleanInput]
+    );
+    
     if (rows.length === 0) {
       return res.status(404).json({ error: 'No account with that email.' });
     }
+    
     const user = rows[0];
-    const userEmail = user.email; // Use exact DB email casing
-
     const otp = crypto.randomInt(100000, 999999).toString();
-    await pool.query('UPDATE users SET otp = $1 WHERE email = $2', [otp, userEmail]);
+    await pool.query('UPDATE users SET otp = $1 WHERE id = $2', [otp, user.id]);
+
+    const targetEmail = (user.email && !user.email.includes('.demo') && !user.email.includes('.novachain')) 
+      ? user.email 
+      : cleanInput;
 
     const mailOptions = {
       from: `"NovaChain Security" <${process.env.EMAIL_USER}>`,
-      to: userEmail,
+      to: targetEmail,
       subject: 'NovaChain OTP Verification',
       text: `Hello${user.username ? " " + user.username : ""}, your OTP code is: ${otp}`,
       html: getOtpEmailHtml(user.username, otp, "Here is your requested verification code.")
     };
+    
     transporter.sendMail(mailOptions, (err) => {
       if (err) {
         console.error('❌ OTP resend email error:', err);
