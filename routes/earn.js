@@ -64,13 +64,21 @@ router.get('/balance', authenticateToken, async (req, res) => {
     );
     const lastWdTime = wdRes.rows[0] ? wdRes.rows[0].timestamp : new Date(0);
 
+    // Look for the most recent forced timer reset first
+    const startRes = await pool.query(
+      "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_CYCLE_START' AND timestamp > $2 ORDER BY timestamp DESC LIMIT 1",
+      [userId, lastWdTime]
+    );
+
     const depRes = await pool.query(
       "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_DEP' AND timestamp > $2 ORDER BY timestamp ASC LIMIT 1",
       [userId, lastWdTime]
     );
     
     let cycleStart = null;
-    if (depRes.rows[0]) {
+    if (startRes.rows[0]) {
+      cycleStart = startRes.rows[0].timestamp;
+    } else if (depRes.rows[0]) {
       cycleStart = depRes.rows[0].timestamp;
     } else if (balance > 0) {
       // Fallback for your existing $100 before this update
@@ -104,21 +112,18 @@ router.post('/deposit', authenticateToken, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Check 24-hour rule using balance_history
-    const wdRes = await client.query(
-      "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_WD' ORDER BY timestamp DESC LIMIT 1", 
-      [userId]
-    );
+    // Fetch cycle timing logic
+    const wdRes = await client.query("SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_WD' ORDER BY timestamp DESC LIMIT 1", [userId]);
     const lastWdTime = wdRes.rows[0] ? wdRes.rows[0].timestamp : new Date(0);
     
-    const depRes = await client.query(
-      "SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_DEP' AND timestamp > $2 ORDER BY timestamp ASC LIMIT 1", 
-      [userId, lastWdTime]
-    );
+    const startRes = await client.query("SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_CYCLE_START' AND timestamp > $2 ORDER BY timestamp DESC LIMIT 1", [userId, lastWdTime]);
+    const depRes = await client.query("SELECT timestamp FROM balance_history WHERE user_id = $1 AND coin = 'EARN_DEP' AND timestamp > $2 ORDER BY timestamp ASC LIMIT 1", [userId, lastWdTime]);
 
+    let cycleStart = startRes.rows[0] ? startRes.rows[0].timestamp : (depRes.rows[0] ? depRes.rows[0].timestamp : null);
     let isWithin24h = false;
-    if (depRes.rows[0]) {
-      const hoursSince = (Date.now() - new Date(depRes.rows[0].timestamp).getTime()) / (1000 * 60 * 60);
+
+    if (cycleStart) {
+      const hoursSince = (Date.now() - new Date(cycleStart).getTime()) / (1000 * 60 * 60);
       if (hoursSince <= 24) isWithin24h = true;
     }
 
@@ -163,6 +168,14 @@ router.post('/deposit', authenticateToken, async (req, res) => {
       "INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp) VALUES ($1, 'EARN_DEP', $2, 1, NOW())", 
       [userId, usdtEquivalent]
     );
+
+    // ANTI-EXPLOIT: If late deposit, forcefully reset the 7-day timer
+    if (cycleStart && !isWithin24h) {
+      await client.query(
+        "INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp) VALUES ($1, 'EARN_CYCLE_START', $2, 1, NOW())", 
+        [userId, usdtEquivalent]
+      );
+    }
 
     await client.query('COMMIT');
     res.json({ 
