@@ -127,12 +127,12 @@ router.post('/deposit', authenticateToken, async (req, res) => {
       if (hoursSince <= 24) isWithin24h = true;
     }
 
-    // Tier 1 minimum is $50 (ONLY if not within an active 24h cycle)
-    if (!isWithin24h && usdtEquivalent < 50) {
+    // Tier 1 minimum is $30 (ONLY if not within an active 24h cycle)
+    if (!isWithin24h && usdtEquivalent < 30) {
       await client.query('ROLLBACK');
       return res.status(400).json({ 
         success: false, 
-        error: `Minimum allocation is $50. Your deposit is worth $${usdtEquivalent.toFixed(2)}.` 
+        error: `Minimum allocation is $30. Your deposit is worth $${usdtEquivalent.toFixed(2)}.` 
       });
     }
 
