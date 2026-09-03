@@ -13,11 +13,11 @@ router.get('/dashboard', authenticateToken, async (req, res) => {
 
     // Find all users where member_code matches this Agent's username
     const { rows: referredUsers } = await pool.query(
-      `SELECT id, username, email, created_at 
-       FROM users 
-       WHERE member_code = $1`,
-      [agentCode]
-    );
+     `SELECT id, username, email, created_at 
+      FROM users 
+      WHERE LOWER(member_code) = LOWER($1)`,
+     [agentCode]
+   );
 
     if (referredUsers.length === 0) {
       return res.json({ users: [], totalUsers: 0 });
