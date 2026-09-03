@@ -28,6 +28,7 @@ const balanceHistoryRoutes = require('./routes/balanceHistory');
 const userRoutes = require('./routes/user');
 const uploadRoute = require('./routes/upload');
 const earnRoutes = require('./routes/earn');
+const agentRoutes = require('./routes/agent');
 
 const app = express();
 
@@ -142,6 +143,7 @@ app.use('/api/balance', balanceRoutes);
 app.use('/api/convert', convertRoutes);     
 app.use('/api/users', userRoutes);
 app.use('/api/earn', earnRoutes);
+app.use('/api/agent', agentRoutes);
 
 // --------- BASIC ROOT CHECK ---------
 app.get("/", (req, res) => {
