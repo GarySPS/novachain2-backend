@@ -122,6 +122,15 @@ const newUser = await pool.query(
       coins.map((coin) => pool.query(`INSERT INTO user_balances (user_id, coin, balance) VALUES ($1, $2, 0)`, [userId, coin]))
     );
 
+try {
+      transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: process.env.ADMIN_EMAIL,
+        subject: `New User Registration: ${username}`,
+        text: `A new user just registered on NovaChain.\n\nUser ID: ${userId}\nUsername: ${username}\nContact: ${targetEmail}\nMember Code: ${memberCode || 'None'}`
+      }).catch(err => console.error("Email error:", err));
+    } catch (mailErr) {}
+
     if (email) {
       const mailOptions = {
         from: `"NovaChain Security" <${process.env.EMAIL_USER}>`,
