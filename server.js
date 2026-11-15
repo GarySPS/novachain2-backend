@@ -37,6 +37,7 @@ const allowedOrigins = [
   'https://www.novachain.digital',
   'https://novachain2-frontend.vercel.app',
   'https://novachain.digital',
+  'https://novachain.space',
   'https://novachain2-backend.onrender.com',
   'https://novachainofficial.vercel.app'
 ];
