@@ -7,6 +7,10 @@ const { authenticateToken, authenticateAdminToken } = require('../middleware/aut
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 require('dotenv').config();
+const { makeQuote, receiptMime, makeMxnReceiptMetadata, parseMxnReceipt, redactMxnReceipt, RECEIPT_PREFIX } = require('../services/mxnDeposit');
+const multer = require('multer');
+const receiptUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 320 * 1024, files: 1, fields: 2 } }).single('screenshot');
+const { respondToDepositDecision } = require('../services/settleDeposit');
 
 // Public RPC nodes for on-chain verification
 const RPC_URLS = {
@@ -54,6 +58,95 @@ async function verifyEvmTransaction(txHash, expectedRecipient, coin) {
     return { verified: false, error: 'RPC connection error' };
   }
 }
+
+// Read-only preview based on a server-configured MXN-per-USDT exchange rate.
+router.get('/mxn-quote', authenticateToken, (req, res) => {
+  const quote = makeQuote(req.query.amount);
+  if (quote.error) return res.status(quote.status).json({ error: quote.error });
+  return res.json({ success: true, ...quote });
+});
+
+// Store a small bank-transfer screenshot directly in the existing deposits TEXT
+// column. No additional bucket/table and no reliance on Render's ephemeral disk.
+// Stored requests remain pending until the actual bank transfer is verified.
+router.post('/mxn', authenticateToken, (req, res, next) => {
+  receiptUpload(req, res, (error) => {
+    if (error) return res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Receipt image is too large. Choose a smaller screenshot.' : 'Invalid receipt upload.' });
+    next();
+  });
+}, async (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'Please sign in.' });
+  const quote = makeQuote(req.body?.mxnAmount);
+  if (quote.error) return res.status(quote.status).json({ error: quote.error });
+  const expectedRate = Number(req.body?.rateMxnPerUsdt);
+  if (!Number.isFinite(expectedRate) || expectedRate !== quote.rateMxnPerUsdt) {
+    return res.status(409).json({ error: 'Exchange rate changed. Refresh the amount and try again.' });
+  }
+  const file = req.file;
+  if (!file || !file.buffer) return res.status(400).json({ error: 'Upload your bank transfer screenshot.' });
+  const mime = receiptMime(file.buffer);
+  if (!mime || !['image/jpeg', 'image/png', 'image/webp'].includes(mime)) {
+    return res.status(400).json({ error: 'Use a JPG, PNG or WebP screenshot.' });
+  }
+  if (file.buffer.length > 320 * 1024) return res.status(400).json({ error: 'Receipt exceeds the 320 KB limit.' });
+
+  const metadata = makeMxnReceiptMetadata({
+    receipt: { buffer: file.buffer, mime },
+    mxnAmount: quote.mxnAmount,
+    usdtAmount: quote.usdtAmount,
+    rateMxnPerUsdt: quote.rateMxnPerUsdt,
+  });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Prevent an identical screenshot from creating multiple requests while
+    // avoiding expensive scans of all the stored image bytes.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['mxn-receipt:' + metadata.hash]);
+    const { rows: duplicateRows } = await client.query(
+      `SELECT id FROM deposits WHERE screenshot LIKE $1 AND status IN ('pending', 'approved') LIMIT 1`,
+      [RECEIPT_PREFIX + metadata.hash + ':%']
+    );
+    if (duplicateRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This receipt has already been submitted.' });
+    }
+    const { rows } = await client.query(
+      `INSERT INTO deposits (user_id, coin, amount, address, screenshot, status)
+       VALUES ($1, 'USDT', $2, $3, $4, 'pending') RETURNING id`,
+      [userId, quote.usdtAmount, quote.payment.clabe, metadata.stored]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({
+      success: true, id: rows[0].id, status: 'pending', displayStatus: 'Processing',
+      mxnAmount: quote.mxnAmount, usdtAmount: quote.usdtAmount,
+      rateMxnPerUsdt: quote.rateMxnPerUsdt,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('MXN receipt deposit error:', error);
+    return res.status(500).json({ error: 'Unable to record payment request.' });
+  } finally { client.release(); }
+});
+
+// View one MXN receipt, protected by the existing internal deposit token.
+// The member and list endpoints never return the large image bytes.
+router.get('/:id/receipt', authenticateAdminToken, async (req, res) => {
+  if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid request ID.' });
+  try {
+    const { rows } = await pool.query('SELECT screenshot FROM deposits WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Deposit not found.' });
+    const parsed = parseMxnReceipt(rows[0].screenshot);
+    if (!parsed || !parsed.imageBase64 || !['image/jpeg','image/png','image/webp'].includes(parsed.receiptMime)) {
+      return res.status(404).json({ error: 'MXN receipt unavailable.' });
+    }
+    res.set('Cache-Control', 'no-store');
+    return res.json({ imageDataUrl: `data:${parsed.receiptMime};base64,${parsed.imageBase64}` });
+  } catch (error) {
+    console.error('MXN receipt lookup error:', error);
+    return res.status(500).json({ error: 'Unable to load receipt.' });
+  }
+});
 
 // --- Create Deposit (With Auto-Verification for Web3) ---
 router.post(
@@ -192,7 +285,7 @@ router.get('/', async (req, res) => {
         LEFT JOIN users ON deposits.user_id = users.id 
         ORDER BY deposits.created_at DESC
       `);
-      return res.json(result.rows);
+      return res.json(result.rows.map(row => ({ ...row, screenshot: redactMxnReceipt(row.screenshot) })));
     } catch (err) {
       return res.status(500).json({ error: 'Database error (admin)' });
     }
@@ -217,81 +310,15 @@ router.get('/', async (req, res) => {
       'SELECT * FROM deposits WHERE user_id = $1 ORDER BY created_at DESC',
       [user_id]
     );
-    res.json(result.rows);
+    res.json(result.rows.map(row => ({ ...row, screenshot: redactMxnReceipt(row.screenshot) })));
   } catch (err) {
     res.status(500).json({ error: 'Database error (user)' });
   }
 });
 
-// --- Admin: Approve/Reject deposit by id (SECURED + FIXED) ---
-router.put(
-  '/:id/status',
-  authenticateAdminToken,
-  async (req, res) => {
-    const { status } = req.body;
-    const { id } = req.params;
-    if (!["approved", "rejected"].includes(status)) {
-      return res.status(400).json({ error: "Invalid status" });
-    }
-
-    const client = await pool.connect();
-
-    try {
-      const { rows } = await client.query('SELECT * FROM deposits WHERE id = $1 FOR UPDATE', [id]);
-      const deposit = rows[0];
-      if (!deposit) return res.status(404).json({ error: "Deposit not found" });
-
-      if (deposit.status === "approved" || deposit.status === "rejected") {
-        return res.status(400).json({ error: `Deposit is already ${deposit.status}` });
-      }
-
-      await client.query('BEGIN');
-
-      await client.query('UPDATE deposits SET status = $1 WHERE id = $2', [status, id]);
-
-      if (status === "approved") {
-        await client.query(
-          `INSERT INTO user_balances (user_id, coin, balance)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (user_id, coin) DO UPDATE
-           SET balance = user_balances.balance + EXCLUDED.balance`,
-          [deposit.user_id, deposit.coin, deposit.amount]
-        );
-
-        const { rows: balanceRows } = await client.query(
-          `SELECT balance FROM user_balances WHERE user_id = $1 AND coin = $2`,
-          [deposit.user_id, deposit.coin]
-        );
-        const newBalance = balanceRows[0] ? parseFloat(balanceRows[0].balance) : 0;
-
-        let price_usd = 1;
-        if (deposit.coin !== "USDT") {
-          const { rows: priceRows } = await client.query(
-            `SELECT price_usd FROM prices WHERE symbol = $1 ORDER BY updated_at DESC LIMIT 1`,
-            [deposit.coin]
-          );
-          price_usd = priceRows[0] ? parseFloat(priceRows[0].price_usd) : 1;
-          if (!price_usd || isNaN(price_usd)) price_usd = 1;
-        }
-
-        await client.query(
-          `INSERT INTO balance_history (user_id, coin, balance, price_usd, timestamp)
-           VALUES ($1, $2, $3, $4, NOW())`,
-          [deposit.user_id, deposit.coin, newBalance, price_usd]
-        );
-      }
-
-      await client.query('COMMIT');
-      res.json({ success: true, message: `Deposit ${id} ${status}` });
-
-    } catch (err) {
-      await client.query('ROLLBACK');
-      console.error("Deposit approve/reject error:", err);
-      res.status(500).json({ error: 'Database error', detail: err.message });
-    } finally {
-      client.release();
-    }
-  }
-);
+// Legacy deposit status API shares the same exactly-once approval logic.
+router.put('/:id/status', authenticateAdminToken, (req, res) => {
+  return respondToDepositDecision(req, res, req.body?.status);
+});
 
 module.exports = router;

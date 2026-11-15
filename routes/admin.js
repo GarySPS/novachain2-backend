@@ -8,10 +8,11 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
+const { respondToDepositDecision } = require('../services/settleDeposit');
 
 // --- Admin API key middleware ---
 function requireAdminApiKey(req, res, next) {
-  if (req.headers['x-admin-token'] === ADMIN_API_TOKEN) {
+  if (ADMIN_API_TOKEN && req.headers['x-admin-token'] === ADMIN_API_TOKEN) {
     return next();
   }
   return res.status(403).json({ error: "Admin token missing or invalid" });
@@ -53,34 +54,16 @@ router.post('/kyc-status', requireAdminApiKey, async (req, res) => {
   }
 });
 
-// --- Approve/Reject Deposit (admin) ---
-router.post('/deposits/:id/status', requireAdminApiKey, async (req, res) => {
-  const { status } = req.body;
-  const { id } = req.params;
-  if (!["approved", "rejected", "pending"].includes(status)) {
-    return res.status(400).json({ error: "Invalid status" });
-  }
-  try {
-    const { rows } = await pool.query('SELECT * FROM deposits WHERE id = $1', [id]);
-    const deposit = rows[0];
-    if (!deposit) return res.status(404).json({ error: "Deposit not found" });
-
-    await pool.query('UPDATE deposits SET status = $1 WHERE id = $2', [status, id]);
-
-    if (status === "approved") {
-      await pool.query(
-        `INSERT INTO user_balances (user_id, coin, balance)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (user_id, coin) DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance`,
-        [deposit.user_id, deposit.coin, deposit.amount]
-      );
-      return res.json({ success: true, balanceAdded: true });
-    } else {
-      return res.json({ success: true, balanceAdded: false });
-    }
-  } catch (err) {
-    res.status(500).json({ error: "Database error" });
-  }
+// The same database transaction protects every approval/decline entry point.
+router.post('/deposits/:id/status', requireAdminApiKey, (req, res) => {
+  return respondToDepositDecision(req, res, req.body?.status);
+});
+// Preserve the paths used by the existing AdminDeposits panel.
+router.post('/deposits/:id/approve', requireAdminApiKey, (req, res) => {
+  return respondToDepositDecision(req, res, 'approved');
+});
+router.post('/deposits/:id/deny', requireAdminApiKey, (req, res) => {
+  return respondToDepositDecision(req, res, 'rejected');
 });
 
 // --- Approve/Reject Withdrawal (admin) ---
