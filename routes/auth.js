@@ -151,6 +151,25 @@ try {
   }
 });
 
+// Keep OTP signup and regular password login session payloads identical.
+function createMemberSession(user) {
+  const payload = {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    isImpersonated: false,
+  };
+  return {
+    token: jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' }),
+    user: {
+      id: 'NC-' + String(user.id).padStart(7, '0'),
+      username: user.username,
+      email: user.email,
+      language: user.language || 'en',
+    },
+  };
+}
+
 // Login (returns JWT, supports email, username, or telegram number)
 router.post('/login', async (req, res) => {
   const { email, password } = req.body; 
@@ -180,44 +199,38 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: "Please verify your email or wait for Admin approval before logging in." });
     }
 
-    const payload = { 
-      id: user.id, 
-      username: user.username, 
-      email: user.email,
-      isImpersonated: false  // Normal login is not impersonation
-    };
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
-    
-    res.json({
-      token,
-      user: {
-        id: "NC-" + String(user.id).padStart(7, "0"),
-        username: user.username,
-        email: user.email,
-        language: user.language || 'en'
-      }
-    });
+    res.json(createMemberSession(user));
   } catch (err) {
     res.status(500).json({ error: 'Database error' });
   }
 });
 
 
-// OTP Verification (POSTGRES BOOLEAN SAFE)
+// Signup OTP verification creates the same 7-day session as normal login.
+// A single conditional UPDATE consumes the OTP, so concurrent/repeated attempts
+// cannot both generate valid sessions from the same verification code.
 router.post('/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
+  const { email, otp } = req.body || {};
+  if (typeof email !== 'string' || typeof otp !== 'string' ||
+      !email.trim() || !/^\d{6}$/.test(otp.trim())) {
+    return res.status(400).json({ error: 'Enter a valid email and 6-digit code.' });
+  }
   try {
-    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    const user = rows[0];
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.otp === otp) {
-      await pool.query('UPDATE users SET verified = TRUE WHERE email = $1', [email]);
-      res.json({ message: 'Email verified successfully' });
-    } else {
-      res.status(400).json({ error: 'Invalid OTP' });
+    const { rows } = await pool.query(
+      `UPDATE users
+       SET verified = TRUE, otp = NULL
+       WHERE email = $1 AND otp = $2 AND verified IS NOT TRUE
+       RETURNING id, username, email, language`,
+      [email.trim(), otp.trim()]
+    );
+    if (!rows.length) {
+      return res.status(400).json({ error: 'Invalid or already used OTP.' });
     }
+    const session = createMemberSession(rows[0]);
+    return res.json({ message: 'Email verified successfully', ...session });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('OTP verification error:', err.message);
+    return res.status(500).json({ error: 'Could not verify email. Please try again.' });
   }
 });
 
