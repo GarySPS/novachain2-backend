@@ -67,16 +67,20 @@ const getOtpEmailHtml = (username, otp, message = "Use the verification code bel
 // --- Register (Email or Phone) ---
 router.post('/register', async (req, res) => {
 
-  const { username, password, email, phoneNumber, memberCode } = req.body;
+  const { username, password, email, memberCode } = req.body || {};
 
-  if (!username || !password || (!email && !phoneNumber)) {
+  // Only email has working verification. Never silently create phone.demo accounts.
+  if (typeof email !== 'string' || !email.trim()) {
     return res.status(400).json({
-      error: 'Missing username, password, and either email or phone number'
+      code: 'EMAIL_REGISTRATION_REQUIRED',
+      error: 'Phone registration is not available yet. Please register using email.'
     });
   }
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username, email and password are required.' });
+  }
 
-  // Generate a demo email if using phone
-  const targetEmail = email ? email : `${phoneNumber.replace(/[^0-9+]/g, '')}@phone.demo`;
+  const targetEmail = email.trim();
 
   try {
     // Check duplicate email / telegram demo email
