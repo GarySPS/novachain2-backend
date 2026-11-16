@@ -16,7 +16,7 @@ test('validate and reject malformed MXN settings', () => {
   assert.ok(validateMxnSettings({ ...sample, clabe: '123' }).error);
   assert.ok(validateMxnSettings({ ...sample, rateMxnPerUsdt: '0' }).error);
   assert.ok(validateMxnSettings({ ...sample, rateMxnPerUsdt: '20.1234567' }).error);
-  assert.ok(validateMxnSettings({ ...sample, holder: 'Bad\\nName' }).error);
+  assert.ok(validateMxnSettings({ ...sample, holder: 'Bad\nName' }).error);
 });
 
 test('new quote uses saved recipient and rate, not a hardcoded value', () => {
