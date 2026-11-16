@@ -27,8 +27,8 @@ function validateMxnSettings(input) {
   const nameValid = value => value.length >= 2 && value.length <= 100 && !/[\u0000-\u001F\u007F]/.test(value);
   if (!nameValid(holder)) return { error: 'Enter a valid account holder (2–100 characters).' };
   if (!nameValid(institution) || institution.length > 70) return { error: 'Enter a valid institution (2–70 characters).' };
-  if (!/^\\d{18}$/.test(clabe)) return { error: 'CLABE must contain exactly 18 digits.' };
-  if (!/^\\d+(?:\\.\\d{1,6})?$/.test(rateText)) return { error: 'Enter an MXN per USDT rate with up to six decimal places.' };
+  if (!/^\d{18}$/.test(clabe)) return { error: 'CLABE must contain exactly 18 digits.' };
+  if (!/^\d+(?:\.\d{1,6})?$/.test(rateText)) return { error: 'Enter an MXN per USDT rate with up to six decimal places.' };
   const rate = Number(rateText);
   if (!Number.isFinite(rate) || rate <= 0 || rate >= 100000) {
     return { error: 'MXN per USDT rate must be greater than zero and less than 100,000.' };
