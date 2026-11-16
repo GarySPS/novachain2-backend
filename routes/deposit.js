@@ -8,8 +8,9 @@ const jwt = require('jsonwebtoken');
 const axios = require('axios');
 require('dotenv').config();
 const { makeQuote, receiptMime, makeMxnReceiptMetadata, parseMxnReceipt, redactMxnReceipt, RECEIPT_PREFIX } = require('../services/mxnDeposit');
+const { getMxnSettings } = require('../services/mxnSettings');
 const multer = require('multer');
-const receiptUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 320 * 1024, files: 1, fields: 2 } }).single('screenshot');
+const receiptUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 320 * 1024, files: 1, fields: 3 } }).single('screenshot');
 const { respondToDepositDecision } = require('../services/settleDeposit');
 
 // Public RPC nodes for on-chain verification
@@ -60,10 +61,17 @@ async function verifyEvmTransaction(txHash, expectedRecipient, coin) {
 }
 
 // Read-only preview based on a server-configured MXN-per-USDT exchange rate.
-router.get('/mxn-quote', authenticateToken, (req, res) => {
-  const quote = makeQuote(req.query.amount);
-  if (quote.error) return res.status(quote.status).json({ error: quote.error });
-  return res.json({ success: true, ...quote });
+router.get('/mxn-quote', authenticateToken, async (req, res) => {
+  try {
+    const settings = await getMxnSettings(pool);
+    const quote = makeQuote(req.query.amount, settings);
+    if (quote.error) return res.status(quote.status).json({ error: quote.error });
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, ...quote });
+  } catch (error) {
+    console.error('MXN quote settings error:', error.message);
+    return res.status(503).json({ error: 'MXN quote temporarily unavailable.' });
+  }
 });
 
 // Store a small bank-transfer screenshot directly in the existing deposits TEXT
@@ -77,8 +85,19 @@ router.post('/mxn', authenticateToken, (req, res, next) => {
 }, async (req, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ error: 'Please sign in.' });
-  const quote = makeQuote(req.body?.mxnAmount);
+  let settings;
+  try {
+    settings = await getMxnSettings(pool);
+  } catch (error) {
+    console.error('MXN request settings error:', error.message);
+    return res.status(503).json({ error: 'MXN settings temporarily unavailable.' });
+  }
+  const quote = makeQuote(req.body?.mxnAmount, settings);
   if (quote.error) return res.status(quote.status).json({ error: quote.error });
+  // Reject a stale destination when a member's wallet already knows the CLABE.
+  if (req.body?.paymentClabe && req.body.paymentClabe !== quote.payment.clabe) {
+    return res.status(409).json({ error: 'Receiving account changed. Refresh the quote before submitting.' });
+  }
   const expectedRate = Number(req.body?.rateMxnPerUsdt);
   if (!Number.isFinite(expectedRate) || expectedRate !== quote.rateMxnPerUsdt) {
     return res.status(409).json({ error: 'Exchange rate changed. Refresh the amount and try again.' });
@@ -96,6 +115,7 @@ router.post('/mxn', authenticateToken, (req, res, next) => {
     mxnAmount: quote.mxnAmount,
     usdtAmount: quote.usdtAmount,
     rateMxnPerUsdt: quote.rateMxnPerUsdt,
+    payment: quote.payment,
   });
   const client = await pool.connect();
   try {

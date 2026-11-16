@@ -14,9 +14,12 @@ function getMxnRate() {
   return Number.isFinite(value) && value > 0 && value < 100000 ? value : null;
 }
 
-function makeQuote(rawAmount) {
-  const rate = getMxnRate();
-  if (!rate) return { error: 'MXN deposits are currently unavailable. Exchange rate not configured.', status: 503 };
+function makeQuote(rawAmount, savedSettings) {
+  const settings = savedSettings || { ...MXN_DETAILS, rateMxnPerUsdt: getMxnRate() };
+  const rate = Number(settings.rateMxnPerUsdt);
+  if (!Number.isFinite(rate) || rate <= 0 || rate >= 100000) {
+    return { error: 'MXN deposits are currently unavailable. Exchange rate not configured.', status: 503 };
+  }
   if (typeof rawAmount !== 'string' && typeof rawAmount !== 'number') {
     return { error: 'Enter an MXN amount.', status: 400 };
   }
@@ -34,7 +37,7 @@ function makeQuote(rawAmount) {
     mxnAmount: mxn.toFixed(2),
     usdtAmount: usdt.toFixed(6),
     rateMxnPerUsdt: rate,
-    payment: MXN_DETAILS,
+    payment: { holder: settings.holder, clabe: settings.clabe, institution: settings.institution },
   };
 }
 
@@ -62,13 +65,14 @@ function receiptMime(buffer) {
   return null;
 }
 
-function makeMxnReceiptMetadata({ receipt, mxnAmount, usdtAmount, rateMxnPerUsdt }) {
+function makeMxnReceiptMetadata({ receipt, mxnAmount, usdtAmount, rateMxnPerUsdt, payment }) {
   const crypto = require('crypto');
   const hash = crypto.createHash('sha256').update(receipt.buffer).digest('hex');
   return {
     hash,
     stored: RECEIPT_PREFIX + hash + ':' + JSON.stringify({
       mxnAmount, usdtAmount, rateMxnPerUsdt,
+      payment: payment || null, // Historical recipient snapshot for later review.
       receiptMime: receipt.mime,
       imageBase64: receipt.buffer.toString('base64'),
     }),

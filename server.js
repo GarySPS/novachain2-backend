@@ -7,6 +7,7 @@ const fs = require('fs');
 const multer = require('multer');
 const path = require('path');
 const pool = require('./db');
+const { getMxnSettings, saveMxnSettings, validateMxnSettings } = require('./services/mxnSettings');
 const axios = require('axios');
 const cron = require('node-cron');
 
@@ -77,13 +78,47 @@ app.get(
   authenticateAdminToken,
   async (req, res) => {
     try {
-      const result = await pool.query(`SELECT coin, address, qr_url FROM deposit_addresses`);
+      const result = await pool.query(`SELECT coin, address, qr_url FROM deposit_addresses WHERE coin <> 'MXN'`);
       res.json(result.rows);
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch deposit addresses" });
     }
   }
 );
+
+// The MXN settings are stored in a dedicated row of deposit_addresses.
+// Only trusted internal services with the existing admin token may read/write.
+function mxnSettingsAuth(req, res, next) {
+  if (!process.env.ADMIN_API_TOKEN) {
+    return res.status(503).json({ error: 'Internal configuration unavailable.' });
+  }
+  return authenticateAdminToken(req, res, next);
+}
+
+app.get('/api/admin/mxn-settings', mxnSettingsAuth, async (req, res) => {
+  try {
+    const settings = await getMxnSettings(pool);
+    res.set('Cache-Control', 'no-store');
+    return res.json(settings);
+  } catch (error) {
+    console.error('MXN settings read failed:', error.message);
+    return res.status(503).json({ error: 'Unable to read MXN settings.' });
+  }
+});
+
+app.put('/api/admin/mxn-settings', mxnSettingsAuth, async (req, res) => {
+  const checked = validateMxnSettings(req.body);
+  if (checked.error) return res.status(400).json({ error: checked.error });
+  try {
+    const result = await saveMxnSettings(pool, checked.value);
+    if (result.error) return res.status(400).json({ error: result.error });
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, settings: result.value });
+  } catch (error) {
+    console.error('MXN settings update failed:', error.message);
+    return res.status(500).json({ error: 'Unable to save MXN settings.' });
+  }
+});
 
 // --- NEW: Admin-only route to SAVE deposit settings ---
 app.post(
@@ -93,6 +128,9 @@ app.post(
     const wallets = req.body; // This is an array: [{ coin: 'USDT', ... }, ...]
     if (!Array.isArray(wallets)) {
       return res.status(400).json({ success: false, message: "Invalid payload. Expected an array." });
+    }
+    if (wallets.some(wallet => wallet?.coin === 'MXN')) {
+      return res.status(400).json({ success: false, message: 'Use the dedicated MXN settings endpoint.' });
     }
 
     const client = await pool.connect(); // Use a transaction for all-or-nothing
@@ -156,7 +194,7 @@ app.get('/api/public/deposit-addresses', async (req, res) => { // <-- Renamed ro
   try {
     const result = await pool.query(
       // Only send coins that have an address set
-      `SELECT coin, address, qr_url FROM deposit_addresses WHERE address IS NOT NULL AND address != ''`
+      `SELECT coin, address, qr_url FROM deposit_addresses WHERE coin <> 'MXN' AND address IS NOT NULL AND address != ''`
     );
     res.json(result.rows);
   } catch (err) {
