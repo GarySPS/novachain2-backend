@@ -10,7 +10,7 @@ require('dotenv').config();
 const { makeQuote, receiptMime, makeMxnReceiptMetadata, parseMxnReceipt, redactMxnReceipt, RECEIPT_PREFIX } = require('../services/mxnDeposit');
 const { getMxnSettings } = require('../services/mxnSettings');
 const multer = require('multer');
-const receiptUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 320 * 1024, files: 1, fields: 2 } }).single('screenshot');
+const receiptUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 320 * 1024, files: 1, fields: 3 } }).single('screenshot');
 const { respondToDepositDecision } = require('../services/settleDeposit');
 
 // Public RPC nodes for on-chain verification
